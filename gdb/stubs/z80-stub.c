@@ -1,0 +1,891 @@
+/******************************************************************************\
+                             Configuration
+\******************************************************************************/
+/* Comment this line out if software breakpoints are unsupported.
+   If you have special function to toggle software breakpoints, then provide
+   here name of these function. Expected prototype:
+       int toggle_swbreak(int set, void *addr);
+   function must return 0 on success. */
+//#define DBG_SWBREAK toggle_swbreak
+#define DBG_SWBREAK
+
+/* Define if one of standard RST handlers is used as software
+   breakpoint entry point */
+//#define DBG_SWBREAK_RST 0x08
+
+/* if platform supports hardware breakpoints then define following two macros
+   by names of functions. Fuctions must have next prototypes:
+     int toggle_hwbreak(int set, void *addr);
+   function must return 0 on success. */
+//#define DBG_HWBREAK toggle_hwbreak
+
+/* if platform supports hardware watchpoints then define all or some of
+   following macros by names of functions. Fuctions prototypes:
+     int toggle_watch(int set, void *addr, int size);  // memory write watch
+     int toggle_rwatch(int set, void *addr, int size); // memory read watch
+     int toggle_awatch(int set, void *addr, int size); // memory access watch
+   function must return 0 on success. */
+//#define DBG_WWATCH toggle_watch
+//#define DBG_RWATCH toggle_rwatch
+//#define DBG_AWATCH toggle_awatch
+
+/* Size of hardware breakpoint. Required to correct PC. */
+#define DBG_HWBREAK_SIZE 0
+
+/* Define following macro if you need custom memory read/write routine.
+   Useful with overlays (bank switching).
+   Do not forget to define:
+   _ovly_debug_prepare - function is called before overlay mapping
+   _ovly_debug_event - function is called after overlay mapping
+   _ovly_table - overlay table
+   _novlys - number of items in _ovly_table
+   _ovly_region_table - overlay regions table
+   _novly_regions - number of items in _ovly_region_table
+ */
+//#define DBG_MEMCPY memcpy
+
+/* define dedicated stack size if required */
+//#define DBG_STACK_SIZE 256
+
+/* max GDB packet size
+   should be much more that DBG_STACK_SIZE because it will be allocated on stack
+*/
+#define DBG_PACKET_SIZE 128
+
+/* Uncomment if required to use trampoline when resuming operation.
+   Useful with dedicated stack when stack pointer do not point to the stack or
+   stack is not writable */
+//#define DBG_USE_TRAMPOLINE
+
+/* Uncomment following macro to enable debug printing to debugger console */
+//#define DBG_PRINT
+
+#define DBG_NMI_EX EX_HWBREAK
+#define DBG_INT_EX EX_SIGINT
+/******************************************************************************\
+                             Public Interface
+\******************************************************************************/
+
+/* Enter to debug mode from software or hardware breakpoint.
+   Assume address of next instruction after breakpoint call is on top of stack.
+   Do JP _debug_swbreak or JP _debug_hwbreak from RST handler, for example.
+ */
+void debug_swbreak (void);
+void debug_hwbreak (void);
+
+/* Jump to this function from NMI handler. Just replace RETN instruction by
+ * JP _debug_nmi
+ */
+void debug_nmi (void);
+
+/* Jump to this function from INT handler. Just replace EI+RETI instructions by
+ * JP _debug_int
+ */
+void debug_int (void);
+
+#define EX_SWBREAK	0	/* sw breakpoint */
+#define EX_HWBREAK	-1	/* hw breakpoint */
+#define EX_WWATCH	-2	/* memory write watch */
+#define EX_RWATCH	-3	/* memory read watch */
+#define EX_AWATCH	-4	/* memory access watch */
+#define EX_SIGINT	2
+#define EX_SIGTRAP	5
+#define EX_SIGABRT	6
+#define EX_SIGBUS	10
+#define EX_SIGSEGV	11
+/* or any standard *nix signal value */
+
+/* Enter to debug mode (after receiving BREAK from GDB)
+ * Assume:
+ *   PC = (SP+0)
+ *   SIG= (SP+2)
+ *   SP = SP+4
+ */
+void debug_exception (int ex);
+
+/* Prints to debugger console. */
+void debug_print(const char *str);
+/******************************************************************************\
+                              Required functions
+\******************************************************************************/
+
+extern int getDebugChar (void);
+extern void putDebugChar (int ch);
+
+/******************************************************************************\
+                               IMPLEMENTATION
+\******************************************************************************/
+
+#include <string.h>
+
+#ifndef NULL
+# define NULL (void*)0
+#endif
+
+typedef unsigned char byte;
+typedef unsigned short word;
+
+/* CPU state */
+#ifdef __SDCC_ez80_adl
+# define REG_SIZE 3
+#else
+# define REG_SIZE 2
+#endif /* __SDCC_ez80_adl */
+
+#define R_AF    (0*REG_SIZE)
+#define R_BC    (1*REG_SIZE)
+#define R_DE    (2*REG_SIZE)
+#define R_HL    (3*REG_SIZE)
+#define R_IX    (4*REG_SIZE)
+#define R_IY    (5*REG_SIZE)
+#define R_SP    (6*REG_SIZE)
+#define R_PC    (7*REG_SIZE)
+#define R_AF_   (8*REG_SIZE)
+#define R_BC_   (9*REG_SIZE)
+#define R_DE_   (10*REG_SIZE)
+#define R_HL_   (11*REG_SIZE)
+#define R_IR    (12*REG_SIZE)
+#define R_MBST  (13*REG_SIZE)/* byte1 - MB register of eZ80, byte0: bit0 - IFF2, bit1 - ADL */
+#define NUMREGBYTES (14*REG_SIZE)
+static byte state[NUMREGBYTES];
+
+/* dedicated stack */
+#ifdef DBG_STACK_SIZE
+static 
+char stack[DBG_STACK_SIZE];
+#define SAVE_SP() __asm\
+	ld	(_state + R_SP), sp\
+	ld	sp, _stack + DBG_STACK_SIZE\
+	__endasm
+#else
+#undef DBG_USE_TRAMPOLINE
+#define SAVE_SP() __asm\
+	ld	(_state + R_SP), sp\
+	__endasm
+#endif
+
+static signed char sigval;
+
+static void stub_main (int sigval, int pc_adj);
+static char high_hex (byte v) __z88dk_fastcall;
+static char low_hex (byte v) __z88dk_fastcall;
+static char put_packet_info (const char *buffer) __z88dk_fastcall;
+static void save_cpu_state (void);
+static void rest_cpu_state (void);
+
+/******************************************************************************/
+#ifdef DBG_SWBREAK
+#ifdef DBG_SWBREAK_RST
+#define DBG_SWBREAK_SIZE 1
+#else
+#define DBG_SWBREAK_SIZE 3
+#endif
+void debug_swbreak (void) __naked
+{
+	SAVE_SP ();
+	save_cpu_state ();
+	stub_main (EX_SWBREAK, -DBG_SWBREAK_SIZE);
+}
+#endif /* DBG_SWBREAK */
+/******************************************************************************/
+#ifdef DBG_HWBREAK
+#ifndef DBG_HWBREAK_SIZE
+#define DBG_HWBREAK_SIZE 0
+#endif /* DBG_HWBREAK_SIZE */
+void debug_hwbreak (void)
+{
+	SAVE_SP ();
+	save_cpu_state ();
+	stub_main (EX_HWBREAK, -DBG_HWBREAK_SIZE);
+}
+#endif /* DBG_HWBREAK_SET */
+/******************************************************************************/
+void debug_exception (int ex)
+{
+	SAVE_SP ();
+	save_cpu_state ();
+	stub_main (ex, 0);
+}
+/******************************************************************************/
+void debug_nmi(void)
+{
+	SAVE_SP ();
+	save_cpu_state ();
+	__asm
+	ld	hl, 0	;pc_adj
+	push	hl
+	ld	hl, DBG_NMI_EX
+	push	hl
+	ld	hl, _stub_main
+	push	hl
+	retn
+	__endasm;
+}
+/******************************************************************************/
+void debug_int(void)
+{
+	SAVE_SP ();
+	save_cpu_state ();
+	__asm
+	ld	hl, 0	;pc_adj
+	push	hl
+	ld	hl, DBG_NMI_EX
+	push	hl
+	ld	hl, _stub_main
+	push	hl
+	reti
+	__endasm;
+}
+/******************************************************************************/
+#ifdef DBG_PRINT
+void debug_print(const char *str)
+{
+	putDebugChar ('$');
+	putDebugChar ('O');
+	char csum = 'O' + put_packet_info (buffer);
+	putDebugChar ('#');
+	putDebugChar (high_hex (csum));
+	putDebugChar (low_hex (csum));
+}
+#endif /* DBG_PRINT */
+/******************************************************************************/
+static void store_pc_sp (int pc_adj) __z88dk_fastcall;
+#define get_reg_value(mem) (*(void* const*)(mem))
+#define set_reg_value(mem,val) do { (*(void**)(mem) = (val)); } while (0)
+static char* byte2hex(char *buf, byte val);
+static int hex2int (const char **buf) __z88dk_fastcall;
+static void get_packet (char *buffer);
+static void put_packet (const char *buffer);
+/* Next functions returns 0 on success, else error code, which is sent as "Exx"
+   to debugger. On success buffer content will be sent. */
+static int process_question (char *buffer);
+static int process_q (char *buffer);
+static int process_g (char *buffer);
+static int process_G (char *buffer);
+static int process_m (char *buffer);
+static int process_M (char *buffer);
+static int process_X (char *buffer);
+//static int process_s (char *buffer);
+static int process_c (char *buffer);
+static int process_k (char *buffer);
+static int process_zZ (char *buffer);
+static int process_unknown (char *buffer);
+
+static const
+struct parser_info
+{
+	char cmd;
+	int (*func)(char *buf);
+} parsers[] = {
+	{ '?', process_question },
+	{ 'G', process_G },
+	{ 'K', process_k },
+	{ 'M', process_M },
+	{ 'X', process_X },
+	{ 'Z', process_zZ },
+	{ 'c', process_c },
+	{ 'g', process_g },
+	{ 'm', process_m },
+	{ 'q', process_q },
+//	{ 's', process_s },
+	{ 'z', process_zZ },
+	{ 0,   process_unknown }
+};
+
+static
+void stub_main (int ex, int pc_adj)
+{
+	char buffer[DBG_PACKET_SIZE+1];
+	sigval = (signed char)ex;
+	store_pc_sp (pc_adj);
+
+	process_question (buffer);
+	put_packet (buffer);
+
+	for (;;) {
+		*buffer = '\0';
+		get_packet (buffer);
+		//find parser
+		const struct parser_info *p = &parsers[0];
+		for (; p->cmd && p->cmd != *buffer; p++);
+		//process
+		int err = p->func (buffer);
+		if (err > 0) {
+			char *p = buffer;
+			*p++ = 'E';
+			p = byte2hex (p, err);
+			*p = '\0';
+		} else if (err < 0) 
+			*buffer = '\0';
+		else if (*buffer == '\0') {
+			char *p = buffer;
+			*p++ = 'O';
+			*p++ = 'K';
+			*p = '\0';
+		}
+		put_packet (buffer);
+	}
+}
+
+static
+void get_packet (char *buffer)
+{
+	char csum;
+	char ch;
+	char *p;
+	char esc;
+#if DBG_PACKET_SIZE <= 256
+	byte count;
+#else
+	unsigned count;
+#endif
+	for (;;) {
+		/* wait for packet start character */
+		while (getDebugChar () != '$');
+retry:
+		csum = 0;
+		esc = 0;
+		p = buffer;
+		count = DBG_PACKET_SIZE;
+		do {
+			ch = getDebugChar ();
+			if (ch == '$')
+				goto retry;
+			if (ch == '#')
+				break;
+			csum += ch;
+			if (ch != '}') {
+				*p++ = ch ^ esc;
+				esc = 0;
+			} else
+				esc = 0x20;
+		} while (--count);
+		*p = '\0';
+		if (ch == '#' && /* packet is not too large */
+			getDebugChar () == high_hex (csum) &&
+			getDebugChar () == low_hex (csum)) {
+			break;
+		} else 
+			putDebugChar ('-');
+	}
+	putDebugChar ('+');
+}
+
+static
+void put_packet (const char *buffer)
+{
+	/*  $<packet info>#<checksum>. */
+	do {
+		putDebugChar ('$');
+		char checksum = put_packet_info (buffer);
+		putDebugChar ('#');
+		putDebugChar (high_hex(checksum));
+		putDebugChar (low_hex(checksum));
+
+	} while (getDebugChar () != '+');
+}
+
+static
+char put_packet_info (const char *src) __z88dk_fastcall
+{
+	char ch;
+	char checksum = 0;
+	for (;;) {
+		ch = *src++;
+		if (ch == '\0')
+			break;
+		if (ch == '}' || ch == '*' || ch == '#' || ch == '$') {
+			/* escape special characters */
+			putDebugChar ('}');
+			checksum += '}';
+			ch ^= 0x20;
+		}
+		putDebugChar (ch);
+		checksum += ch;
+	}
+	return checksum;
+}
+
+static void
+store_pc_sp (int pc_adj) __z88dk_fastcall
+{
+	byte *sp = get_reg_value (&state[R_SP]);
+	byte *pc = get_reg_value (sp);
+	pc += pc_adj;
+	sp += REG_SIZE;
+	set_reg_value (&state[R_PC], pc);
+	set_reg_value (&state[R_SP], sp);
+}
+
+static char *mem2hex(char *buf, const byte *mem, unsigned bytes);
+static char *hex2mem(byte *mem, const char *buf, unsigned bytes);
+
+static int 
+process_question (char *p)
+{
+	*p++ = 'T';
+	p = byte2hex (p, sigval <= 0 ? EX_SIGTRAP : (byte)sigval);
+#if defined(DBG_WWATCH) || defined(DBG_RWATCH) || defined(DBG_AWATCH)
+	switch (ex) {
+/*#ifdef DBG_SWBREAK
+	case EX_SWBREAK:
+		strcpy (p, " swbreak:");
+		return;
+#endif*/
+#ifdef DBG_HWBREAK
+	case EX_HWBREAK:
+		strcpy (p, " hwbreak:");
+		return;
+#endif
+#ifdef DBG_WWATCH
+	case EX_WWATCH:
+		strcpy (p, " watch:");
+		break;
+#endif
+#ifdef DBG_RWATCH
+	case EX_RWATCH:
+		strcpy (p, " rwatch:");
+		break;
+#endif
+#ifdef DBG_AWATCH
+	case EX_AWATCH:
+		strcpy (p, " awatch:");
+		break;
+#endif
+	}
+	for (; *p != '\0'; p++);
+	/* TODO: add support for watchpoint address */
+	*p++ = '0';
+	*p++ = '0';
+#endif /*DBG_WWATCH, DBG_RWATCH, DBG_AWATCH */
+	*p++ = '\0';
+	return 0;
+}
+
+#define STRING2(x) #x
+#define STRING1(x) STRING2(x)
+#define STRING(x) STRING1(x)
+
+#define DO_EXPAND(VAL)  VAL ## 123456
+#define EXPAND(VAL)     DO_EXPAND(VAL)
+
+#if defined(DBG_SWBREAK) && EXPAND(DBG_SWBREAK) != 123456
+#define DBG_SWBREAK_PROC DBG_SWBREAK
+#endif
+
+static int 
+process_q (char *buffer)
+{
+	if (strncmp(buffer + 1, "Supported", 9) == 0)
+		strcpy (buffer,
+			"PacketSize=" STRING(DBG_PACKET_SIZE)
+#ifdef DBG_SWBREAK_PROC
+			";swbreak"
+#endif
+#ifdef DBG_HWBREAK
+			";hwbreak"
+#endif
+		);
+	return 0;
+}
+
+static int 
+process_g (char *buffer)
+{
+	buffer = mem2hex (buffer, state, NUMREGBYTES);
+	*buffer = '\0';
+	return 0;
+}
+
+static int 
+process_G (char *buffer)
+{
+	hex2mem (state, buffer, NUMREGBYTES);
+	/* OK response */
+	*buffer = 0;
+	return 0;
+}
+static int
+process_m (char *buffer)
+{/* mAA..AA,LLLL  Read LLLL bytes at address AA..AA */
+	char *p = buffer;
+	++p;
+	byte *addr = (void*)hex2int(&p);
+	if (*p++ != ',')
+		return 1;
+	unsigned len = (unsigned)hex2int(&p);
+	if (len == 0)
+		return 2;
+	if (len > DBG_PACKET_SIZE/2)
+		return 3;
+	p = buffer;
+#ifdef GDB_MEMCPY
+	do {
+		byte tmp[16];
+		unsigned tlen = sizeof(tmp);
+		if (tlen > len)
+			tlen = len;
+		GDB_MEMCPY(tmp, addr, tlen);
+		p = mem2hex (p, tmp, tlen);
+		addr += tlen;
+		len -= tlen;
+	} while (len);
+#else
+	p = mem2hex (p, addr, len);
+#endif
+	*p = '\0';
+	return 0;
+}
+
+static int
+process_M (char *buffer)
+{/* MAA..AA,LLLL: Write LLLL bytes at address AA.AA return OK */
+	char *p = buffer;
+	++p;
+	byte *addr = (void*)hex2int(&p);
+	if (*p != ',')
+		return 1;
+	++p;
+	int len = (unsigned)hex2int(&p);
+	if (*p++ != ':')
+		return 2;
+	if (len == 0)
+		goto end;
+	if (len > (DBG_PACKET_SIZE - (p - buffer))/2)
+		return 3;
+#ifdef GDB_MEMCPY
+	do {
+		byte tmp[16];
+		unsigned tlen = sizeof(tmp);
+		if (tlen > len)
+			tlen = len;
+		p = hex2mem (tmp, p, tlen);
+		GDB_MEMCPY(addr, tmp, tlen);
+		addr += tlen;
+		len -= tlen;
+	} while (len);
+#else
+	hex2mem (addr, p, len);
+#endif
+end:
+	/* OK response */
+	*buffer = '\0';
+	return 0;
+}
+
+static int
+process_X (char *buffer)
+{/* XAA..AA,LLLL: Write LLLL binary bytes at address AA.AA return OK */
+	char *p = buffer;
+	++p;
+	byte *addr = (void*)hex2int(&p);
+	if (*p != ',')
+		return 1;
+	++p;
+	int len = (unsigned)hex2int(&p);
+	if (*p++ != ':')
+		return 2;
+	if (len == 0)
+		goto end;
+	if (len > DBG_PACKET_SIZE - (p - buffer))
+		return 3;
+#ifdef GDB_MEMCPY
+	GDB_MEMCPY(addr, p, len);
+#else
+	memcpy (addr, p, len);
+#endif
+end:
+	/* OK response */
+	*buffer = '\0';
+	return 0;
+}
+
+//static int process_s (char *buffer);
+
+static int
+process_c (char *buffer)
+{/* 'cAAAA' - Continue at address AAAA(optional) */
+	const char *p = buffer;
+	if (*p != '\0') {
+		++p;
+		void *addr = (void*)hex2int(&p);
+		set_reg_value (&state[R_PC], addr);
+	}
+	rest_cpu_state ();
+	//not reached
+	return 0;
+}
+
+static int
+process_k (char *buffer)
+{/* 'k' - Kill the program */
+	__asm
+	rst	0	;TODO: make proper program restart
+	__endasm;
+	/* OK response */
+	*buffer = 0;
+	return 0;
+}
+
+static int 
+process_zZ (char *buffer) /* insert/remove breakpoint */
+{
+#if defined(DBG_SWBREAK_PROC) || defined(DBG_HWBREAK) || defined(DBG_WWATCH) || defined(DBG_RWATCH) || defined(DBG_AWATCH)
+	const int set = (*buffer == 'Z');
+	const char *p = &buffer[3];
+	void *addr = (void*)hex2int(&p);
+	if (*p != ',')
+		return 2;
+	p++;
+	int kind = (void*)hex2int(&p);
+	switch (buffer[1]) {
+#ifdef DBG_SWBREAK_PROC
+	case '0': /* sw break */
+		return DBG_SWBREAK_PROC(set, addr);
+#endif
+#ifdef DBG_HWBREAK
+	case '1': /* hw break */
+		return DBG_HWBREAK(set, addr);
+#endif
+#ifdef DBG_WWATCH
+	case '2': /* write watch */
+		return DBG_WWATCH(set, addr, kind);
+#endif
+#ifdef DBG_RWATCH
+	case '3': /* read watch */
+		return DBG_RWATCH(set, addr, kind);
+#endif
+#ifdef DBG_AWATCH
+	case '4': /* access watch */
+		return DBG_AWATCH(set, addr, kind);
+#endif
+	default:;
+	}
+#endif
+	(void)buffer;
+	return -1;
+}
+
+static int 
+process_unknown (char *buffer)
+{
+	(void)buffer;
+	return -1; /* empty response */
+}
+
+static char *
+byte2hex (char *p, byte v)
+{
+	*p++ = high_hex (v);
+	*p++ = low_hex (v);
+	return p;
+}
+
+static signed char
+hex2val (signed char hex) __z88dk_fastcall
+{
+	hex -= '0';
+	if (hex <= 9)
+		return hex;
+	hex -= 'A' - '0' - 10;
+	if (hex <= 16)
+		return hex;
+	hex -= 'a' - 'A';
+	return hex;
+}
+
+static int
+hex2byte (const char *p) __z88dk_fastcall
+{
+	signed char h = hex2val (*p++);
+	if (h < 0)
+		return -1;
+	signed char l = hex2val (*p);
+	if (l < 0)
+		return -1;
+	return (h << 4) | l;
+}
+
+static int
+hex2int (const char **buf) __z88dk_fastcall
+{
+	word r = 0;
+	const char *p = *buf;
+	for (;; p++) {
+		int a = hex2val(*p);
+		if (a < 0)
+			break;
+		r <<= 4;
+		r |= (byte)a;
+	}
+	*buf = p;
+	return (int)r;
+}
+
+static char 
+high_hex (byte v) __z88dk_fastcall
+{
+	return low_hex(v >> 4);
+}
+
+static char
+low_hex (byte v) __z88dk_fastcall
+{
+	static const char digits[] =
+	{
+		'0','1','2','3','4','5','6','7',
+		'8','9','a','b','c','d','e','f'
+	};
+	return digits[v & 0x0f];
+}
+
+/* convert the memory, pointed to by mem into hex, placing result in buf */
+/* return a pointer to the last char put in buf (null) */
+static char *
+mem2hex (char *buf, const byte *mem, unsigned bytes)
+{
+	if (bytes != 0) {
+		do {
+			buf = byte2hex (buf, *mem++);
+		} while (--bytes);
+	}
+	*buf = 0;
+	return buf;
+}
+
+/* convert the hex array pointed to by buf into binary, to be placed in mem */
+/* return a pointer to the character after the last byte written */
+
+static const char *
+hex2mem (byte *mem, const char *buf, unsigned bytes)
+{
+	if (bytes != 0) {
+		do {
+			*mem++ = hex2byte (buf);
+			buf += 2;
+		} while (--bytes);
+	}
+	return buf;
+}
+
+/* saves all state.except PC and SP */
+static
+void save_cpu_state() __naked
+{
+	__asm
+	ld	(#_state + R_HL), hl
+	push	af
+	pop	hl
+	ld	(#_state + R_AF), hl
+	ld	a, r	;R is increased by 6 or by 7 if called via RST
+	ld	l, a
+	sub	a, 6
+	xor	a, l
+	and	a, 0x7f
+	xor	a, l
+#ifdef __SDCC_ez80_adl
+	ld	hl, i
+	push	hl
+	dec	sp
+	pop	hl	;load value of I to higher bits of {uHL,HL}
+	inc	sp
+	ld	l, a	;restore R register value
+#else
+	ld	l, a	;restore R register value
+	ld	a, i
+	ld	h, a
+#endif
+	ld	(#_state + R_IR), hl
+#ifdef __SDCC_ez80_adl
+	ld	a, MB
+	ld	h, a
+	ld	l, 0
+#else
+	ld	hl, 0
+#endif
+	jp	po, 10$
+	inc	l
+10$:	ld	(#_state + R_MBST), hl
+	ld	(#_state + R_DE), de
+	ld	(#_state + R_BC), bc
+	ld	(#_state + R_IX), ix
+	ld	(#_state + R_IY), iy
+	ex	af, af'	;'
+	exx
+	ld	(#_state + R_HL_), hl
+	ld	(#_state + R_DE_), de
+	ld	(#_state + R_BC_), bc
+	push	af
+	pop	hl
+	ld	(#_state + R_AF_), hl
+	ret
+	__endasm;
+}
+
+/* restore all state.and continue execution */
+static
+void rest_cpu_state() __naked
+{
+	__asm
+#ifdef DBG_USE_TRAMPOLINE
+	ld	sp, _stack + DBG_STACK_SIZE
+	ld	hl, (#_state + R_PC)
+	push	hl	/* resume address */
+#ifdef __SDCC_ez80_adl
+	ld	hl, 0xc30000
+#else
+	ld	hl, 0xc300
+#endif
+	push	de	/* JP opcode */
+#endif
+	ld	hl, (#_state + R_AF_)
+	push	hl
+	pop	af
+	ld	hl, (#_state + R_HL_)
+	ld	de, (#_state + R_DE_)
+	ld	bc, (#_state + R_BC_)
+	exx
+	ex	af, af'	;'
+	ld	iy, (#_state + R_IY)
+	ld	ix, (#_state + R_IX)
+	ld	bc, (#_state + R_BC)
+	ld	de, (#_state + R_DE)
+#ifdef __SDCC_ez80_adl
+	ld	a, (#_state + R_MBST + 1)
+	ld	MB, a
+#endif
+	ld	hl, (#_state + R_IR + 1)
+#ifdef __SDCC_z80_adl
+	ld	i, hl
+	ld	a, (#_state + R_IR)
+	ld	l, a
+#else
+	ld	a, h
+	ld	i, a
+	ld	a, l
+#endif
+	sub	a, 8	;number of M1 cycles after ld r,a
+	xor	a, l
+	and	a, 0x7f
+	xor	a, l
+	ld	r, a
+	ld	hl, (#_state + R_AF)
+	push	hl
+	pop	af
+	ld	sp, (#_state + R_SP)
+#ifndef DBG_USE_TRAMPOLINE
+	ld	hl, (#_state + R_PC)
+	push	hl
+#endif
+	ld	hl, (#_state + R_HL)
+#ifdef DBG_USE_TRAMPOLINE
+#ifdef __SDCC_ez80_adl
+	jp	#_stack + DBG_STACK_SIZE - 4
+#else
+	jp	#_stack + DBG_STACK_SIZE - 3
+#endif
+#endif
+	ret
+	__endasm;
+}
+
