@@ -45,6 +45,12 @@ __gdb_break_handler:
 	jp	_debug_swbreak
 */
 
+/* meaning of terms "previous" and "next":
+   previous frame - frame of callee, which is called by current function
+   current frame - frame of current function which has called callee
+   next frame - frame of caller, which has called current function
+*/
+
 struct gdbarch_tdep
 {
   /* Number of bytes used for address:
@@ -60,19 +66,33 @@ struct gdbarch_tdep
   struct type *pc_type;
 };
 
+/* At any time stack frame contains following parts:
+   [<current PC>]
+   [<temporaries, y bytes>]
+   [<local variables, x bytes>
+   <next frame FP>]
+   [<saved state (critical or interrupt functions), 2 or 10 bytes>]
+   In simplest case <next PC> is pointer to the call instruction
+   (or call __call_hl). There are more difficult cases: interrupt handler or
+   push/ret and jp; but they are untrackable.
+*/
+
 struct z80_unwind_cache
 {
-  /* The previous frame's inner most stack address.  Used as this
-     frame ID's stack_addr.  */
+  /* The previous frame's inner most stack address (SP after call executed),
+     it is current frame's frame_id */
   CORE_ADDR prev_sp;
-  /* The frame's base, optionally used by the high-level debug info.  */
-  CORE_ADDR frame_base;
-  /* Size of local variables */
-  int frame_size;
-  /* SP offset from frame_base. Zero after prolog, negative while stepping near
-     function when arguments are pushed on stack */
-  int sp_offset;
+
+  /* Size of the frame, prev_sp + size = next_frame.prev_sp */
+  ULONGEST size;
+
+  /* size of saved state (including frame pointer and return address),
+     assume: prev_sp + size = IX + state_size */
+  ULONGEST state_size; 
+
   struct {
+    int called:1;	/* there is return address on stack */
+    int load_args:1;	/* prologues loads args using POPs */
     int fp_sdcc:1;	/* prologue saves and adjusts frame pointer IX */
     int interrupt:1;	/* __interrupt handler */
     int critical:1;	/* __critical function */
@@ -114,6 +134,70 @@ z80_register_type (struct gdbarch *gdbarch, int reg_nr)
   return builtin_type (gdbarch)->builtin_data_ptr;
 }
 
+/* next 2 functions check buffer for instruction. If it is pop/push rr, then it
+   returns register number:
+     0x10 - BC
+     0x11 - DE
+     0x12 - HL
+     0x13 - AF
+     0x22 - IX
+     0x32 - IY */
+static int
+z80_is_pop_rr (const gdb_byte buf[], int *size)
+{
+  switch (buf[0])
+    {
+    case 0xc1:
+      *size = 1;
+      return Z80_BC_REGNUM | 0x100;
+    case 0xd1:
+      *size = 1;
+      return Z80_DE_REGNUM | 0x100;
+    case 0xe1:
+      *size = 1;
+      return Z80_HL_REGNUM | 0x100;
+    case 0xf1:
+      *size = 1;
+      return Z80_AF_REGNUM | 0x100;
+    case 0xdd:
+      *size = 2;
+      return (buf[1] == 0xe1) ? (Z80_IX_REGNUM | 0x100) : 0;
+    case 0xfd:
+      *size = 2;
+      return (buf[1] == 0xe1) ? (Z80_IY_REGNUM | 0x100) : 0;
+    }
+  *size = 0;
+  return 0;
+}
+
+static int
+z80_is_push_rr (const gdb_byte buf[], int *size)
+{
+  switch (buf[0])
+    {
+    case 0xc5:
+      *size = 1;
+      return Z80_BC_REGNUM | 0x100;
+    case 0xd5:
+      *size = 1;
+      return Z80_DE_REGNUM | 0x100;
+    case 0xe5:
+      *size = 1;
+      return Z80_HL_REGNUM | 0x100;
+    case 0xf5:
+      *size = 1;
+      return Z80_AF_REGNUM | 0x100;
+    case 0xdd:
+      *size = 2;
+      return (buf[1] == 0xe5) ? (Z80_IX_REGNUM | 0x100) : 0;
+    case 0xfd:
+      *size = 2;
+      return (buf[1] == 0xe5) ? (Z80_IY_REGNUM | 0x100) : 0;
+    }
+  *size = 0;
+  return 0;
+}
+
 /* Function: z80_scan_prologue
         
    This function decodes a function prologue to determine:
@@ -121,6 +205,15 @@ z80_register_type (struct gdbarch *gdbarch, int reg_nr)
      2) which registers are saved on it
      3) the offsets of saved regs
    This information is stored in the z80_unwind_cache structure.
+   Small SDCC functions may just load args using POP instructions in prologue:
+	pop	af
+	pop	de
+	pop	hl
+	pop	bc
+	push	bc
+	push	hl
+	push	de
+	push	af
    SDCC function prologue may have up to 3 sections (all are optional):
      1) save state
        a) __critical functions:
@@ -172,9 +265,10 @@ z80_scan_prologue (struct gdbarch *gdbarch, CORE_ADDR pc_beg, CORE_ADDR pc_end,
 {
   enum bfd_endian byte_order = gdbarch_byte_order (gdbarch);
   int addr_len = gdbarch_tdep (gdbarch)->addr_length;
-  unsigned char prologue[32]; /* max prologue is 24 bytes: __interrupt with local array */
+  gdb_byte prologue[32]; /* max prologue is 24 bytes: __interrupt with local array */
   int pos = 0;
   int len;
+  int reg;
   CORE_ADDR value;
 
   len = pc_end - pc_beg;
@@ -183,19 +277,36 @@ z80_scan_prologue (struct gdbarch *gdbarch, CORE_ADDR pc_beg, CORE_ADDR pc_end,
 
   read_memory (pc_beg, prologue, len);
 
+  /* stage0: check for series of POPs and then PUSHs */
+  if ((reg = z80_is_pop_rr(prologue, &pos)))
+    {
+      int i;
+      int size = pos;
+      gdb_byte regs[8]; /* Z80 have only 6 register pairs */
+      regs[0] = reg & 0xff;
+      for (i = 1; i < 8 && (regs[i] = z80_is_pop_rr (&prologue[pos], &size));
+	   ++i, pos += size);
+      /* now we expect series of PUSHs in reverse order */
+      for (--i; i >= 0 && regs[i] == z80_is_push_rr (&prologue[pos], &size);
+	   --i, pos += size);
+      if (i == -1 && pos > 0)
+	info->prolog_type.load_args = 1;
+      else
+	pos = 0;
+    }
   /* stage1: check for __interrupt handlers and __critical functions */
-  if (!memcmp (prologue, "\355\127\363\365", 4))
+  else if (!memcmp (&prologue[pos], "\355\127\363\365", 4))
     { /* ld a, i; di; push af */
       info->prologue_type.critical = 1;
-      pos = 4;
+      pos += 4;
+      info->state_size += addr_len;
     }
-  else if (!memcmp (prologue, "\365\305\325\345\375\345", 6))
+  else if (!memcmp (&prologue[pos], "\365\305\325\345\375\345", 6))
     { /* push af; push bc; push de; push hl; push iy */
       info->prologue_type.interrupt = 1;
-      pos = 6;
+      pos += 6;
+      info->state_size += addr_len * 5;
     }
-  else
-    pos = 0;
 
   /* stage2: check for FP saving scheme */
   if (prologue[pos] == 0xcd) /* call nn */
@@ -211,8 +322,8 @@ z80_scan_prologue (struct gdbarch *gdbarch, CORE_ADDR pc_beg, CORE_ADDR pc_end,
 	  info->prologue_type.fp_sdcc = 1;
 	}
     }
-  else if (!memcmp (&prologue[pos], "\335\345\335\041", 4) &&
-           !memcpy (&prologue[pos+4+addr_len], "\335\071\335\371", 4))
+  else if (!memcmp (&prologue[pos], "\335\345\335\041\000\000", 4+addr_len) &&
+           !memcmp (&prologue[pos+4+addr_len], "\335\071\335\371", 4))
     { /* push ix; ld ix, #0; add ix, sp; ld sp, ix */
       pos += 4 + addr_len + 4;
       info->prologue_type.fp_sdcc = 1;
@@ -280,22 +391,25 @@ z80_scan_prologue (struct gdbarch *gdbarch, CORE_ADDR pc_beg, CORE_ADDR pc_end,
 	  break;
     }
   len = 0;
-  if (info->prologue_type.fp_sdcc)
-    {
-      info->saved_regs[R_IX] = info->size + len++;
-      len += addr_len;
-    }
+  //info->saved_regs[Z80_PC_REGNUM].addr = len++
+
   if (info->prologue_type.interrupt)
     {
-      info->saved_regs[R_IY] = info->size + len + addr_len*0;
-      info->saved_regs[R_HL] = info->size + len + addr_len*1;
-      info->saved_regs[R_DE] = info->size + len + addr_len*2;
-      info->saved_regs[R_BC] = info->size + len + addr_len*3;
-      info->saved_regs[R_AF] = info->size + len + addr_len*4;
-      len += addr_len*5;
+      info->saved_regs[Z80_AF_REGNUM].addr = len++
+      info->saved_regs[Z80_BC_REGNUM].addr = len++;
+      info->saved_regs[Z80_DE_REGNUM].addr = len++;
+      info->saved_regs[Z80_HL_REGNUM].addr = len++;
+      info->saved_regs[Z80_IY_REGNUM].addr = len++;
     }
-  /* fill prev_sp by offset to return address */
-  info->prev_sp = info->size + len;
+
+  if (info->prologue_type.critical)
+    len++; /* just skip IFF2 saved state */
+
+  if (info->prologue_type.fp_sdcc)
+    info->saved_regs[Z80_IX_REGNUM].addr = len++;
+
+  info->state_size += len * addr_len;
+
   return pc_beg + pos;
 }
 
@@ -398,33 +512,27 @@ z80_return_value (struct gdbarch *gdbarch, struct value *function,
   return RETURN_VALUE_REGISTER_CONVENTION;
 }
 
-/* Put here the code to store, into fi->saved_regs, the addresses of
-   the saved registers of frame described by FRAME_INFO.  This
-   includes special registers such as pc and fp saved in special ways
-   in the stack frame.  sp is even more special: the address we return
-   for it IS the sp for the next frame.  */
-
-static struct avr_unwind_cache *
+/* function unwinds current stack frame and returns next one */
+static struct z80_unwind_cache *
 z80_frame_unwind_cache (struct frame_info *this_frame,
                         void **this_prologue_cache)
 {
   CORE_ADDR start_pc, current_pc;
-  ULONGEST prev_sp;
   ULONGEST this_base;
   int i;
   gdb_byte buf[sizeof(void*)];
   struct z80_unwind_cache *info;
   struct gdbarch *gdbarch = get_frame_arch (this_frame);
   struct gdbarch_tdep *tdep = gdbarch_tdep (gdbarch);
+  int addr_len = gdbarch_tdep (gdbarch)->addr_length;
 
   if (*this_prologue_cache)
     return (struct z80_unwind_cache *) *this_prologue_cache;
 
   info = FRAME_OBSTACK_ZALLOC (struct z80_unwind_cache);
-  *this_prologue_cache = info;
+  memset (info, 0, sizeof (*info));
   info->saved_regs = trad_frame_alloc_saved_regs (this_frame);
-  info->size = 0;
-  info->prologue_type = AVR_PROLOGUE_NONE;
+  *this_prologue_cache = info;
 
   start_pc = get_frame_func (this_frame);
   current_pc = get_frame_pc (this_frame);
@@ -435,18 +543,68 @@ z80_frame_unwind_cache (struct frame_info *this_frame,
   if (info->prologue_type.fp_sdcc)
     {
       /*  with SDCC standard prologue IX points to the end of current frame
-	  (where previous frame IX saved) */
-      get_frame_register (this_frame, R_IX, buf);
-      this_base = extract_typed_address(buf, builtin_type (gdbarch)->builtin_func_ptr);
-      info->frame_base = this_base - info->frame_size;
+	  (where previous frame pointer and state are saved) */
+      this_base = get_frame_register_unsigned (this_frame, Z80_IX_REGNUM);
+      info->prev_sp = this_base + info->size;
     }
   else
     {
-      /* it's much harder */
- /*TODO: implement me */
+      CORE_ADDR addr;
+      CORE_ADDR sp;
+      CORE_ADDR sp_mask = (1 << gdbarch_ptr_bit(gdbarch)) - 1;
+      enum bfd_endian byte_order = gdbarch_byte_order (gdbarch);
+      gbd_byte buf[8];
+      /* Assume that the FP is this frame's SP but with that pushed
+         stack space added back.  */
+      this_base = get_frame_register_unsigned (this_frame, Z80_SP_REGNUM);
+      sp = this_base + info->size;
+      for (;; ++sp)
+	{
+	  sp &= sp_mask;
+	  if (sp < this_base)
+	    { /*overflow, looks like end of stack */
+	      sp = this_base + info->size;
+	      break;
+	    }
+	  /* find return address */
+	  read_memory (sp, buf, addr_len);
+	  addr = extract_unsigned_integer(buf, addr_len, byte_order);
+	  read_memory (addr-addr_len-1, buf, addr_len+1);
+	  if (buf[0] == 0xcd || (buf[0] & 0307) == 0304) /* Is it CALL */
+            { /* CALL nn or CALL cc,nn */
+	      static const char *names[] =
+		{
+		  "__sdcc_call_ix", "__sdcc_call_iy", "__sdcc_call_hl"
+		};
+	      addr = extract_unsigned_integer(buf+1, addr_len, byte_order);
+	      if (addr == start_pc)
+		break; /* found */
+	      for (i = sizeof(names)/sizeof(*names)-1; i >= 0; --i)
+		{
+		  struct bound_minimal_symbol msymbol;
+		  msymbol = lookup_minimal_symbol (names[i], NULL, NULL);
+		  if (!msymbol.minsym)
+		    continue;
+		  if (addr == BMSYMBOL_VALUE_ADDRESS (msymbol))
+		    break;
+		}
+	      if (i >= 0)
+		break;
+	      continue;
+            }
+	  else
+	    continue; /* it is not call_nn, call_cc_nn */
+	  
+	}
+      info->prev_sp = sp;
     }
 
-  info->prev_sp += info->frame_base;
+  /* Adjust all the saved registers so that they contain addresses and not
+     offsets.  */
+  for (i = 0; i < gdbarch_num_regs (gdbarch) - 1; i++)
+    if (info->saved_regs[i].addr > 0)
+      info->saved_regs[i].addr = info->prev_sp -
+			info->saved_regs[i].addr * addr_len;
 
   /* Except for the startup code, the return PC is always saved on
      the stack and is at the base of the frame.  */
@@ -455,68 +613,14 @@ z80_frame_unwind_cache (struct frame_info *this_frame,
   /* The previous frame's SP needed to be computed.  Save the computed
      value.  */
   trad_frame_set_value (info->saved_regs, R_SP,
-                        info->prev_sp + tdep->addr_length);
-}
-
-/* TODO: find description */
-static int
-z80_unwind_pc (struct gdbarch *gdbarch, struct frame_info *next_frame)
-{
-  CORE_ADDR pc;
-  gdb_byte buf[3];
-
-  frame_unwind_register(next_frame, R_PC, buf);
-  pc = extract_typed_address(buf, builtin_type (gdbarch)->builtin_func_ptr);
-
-  return pc;
-}
-
-/* TODO: find description */
-static int
-z80_unwind_sp (struct gdbarch *gdbarch, struct frame_info *next_frame)
-{
-  CORE_ADDR sp;
-  gdb_byte buf[3];
-
-  frame_unwind_register(next_frame, R_SP, buf);
-  sp = extract_typed_address(buf, builtin_type (gdbarch)->builtin_func_ptr);
-
-  return sp;
-}
-
-/* Given a GDB frame, determine the address of the calling function's
-   frame.  This will be used to create a new GDB frame struct.  */
-
-static void
-avr_frame_this_id (struct frame_info *this_frame,
-                   void **this_prologue_cache,
-                   struct frame_id *this_id)
-{
-  CORE_ADDR base;
-  CORE_ADDR func;
-  struct frame_id id;
-  struct avr_unwind_cache *info
-    = z80_frame_unwind_cache (this_frame, this_prologue_cache);
-
-  /* The FUNC is easy.  */
-  func = get_frame_func (this_frame);
-
-  /* Hopefully the prologue analysis either correctly determined the
-     frame's base (which is the SP from the previous frame), or set
-     that base to "NULL".  */
-  base = info->prev_sp;
-  if (base == 0)
-    return;
-
-  id = frame_id_build (base, func);
-  (*this_id) = id;
+                        info->prev_sp + addr_len);
 }
 
 /* TODO: find description */
 static const unsigned char *
 z80_breakpoint_from_pc (struct gdbarch *gdbarch, CORE_ADDR * pcptr, int *lenptr)
 {
-  static unsigned char break_insn[5];
+  unsigned char break_insn[5];
   static int break_insn_len = -1;
   if (break_insn_len == -1)
     {
@@ -533,7 +637,7 @@ z80_breakpoint_from_pc (struct gdbarch *gdbarch, CORE_ADDR * pcptr, int *lenptr)
 	    }
 	  else if (gdbarch_bfd_arch_info (gdbarch)->mach == bfd_mach_ez80_adl)
 	   { /* eZ80 in ADL or mixed mode */
-	     *p++ = 0x5b; /* .LIL */
+	     //*p++ = 0x5b; /* .LIL */
 	     *p++ = 0xcd; /* CALL */
 	     *p++ = (addr >> 0) & 0xff;
 	     *p++ = (addr >> 8) & 0xff;
@@ -547,13 +651,18 @@ z80_breakpoint_from_pc (struct gdbarch *gdbarch, CORE_ADDR * pcptr, int *lenptr)
 	   }
 	  break_insn_len = p - &break_insn[0];
 	}
-      else /* __gdb_break_handler is not defined - cannot set breakpoint */
-	break_insn_len = 0;
+      else /* __gdb_break_handler is not defined - assume RST 8 */
+	{
+	  break_insn[0] = 0xcf; /* RST 8 */
+	  break_insn_len = 1;
+	}
     }
   *lenptr = break_insn_len;
   return &break_insn[0];
 }
 
+/* Given a GDB frame, determine the address of the calling function's
+   frame.  This will be used to create a new GDB frame struct.  */
 static void
 z80_frame_this_id (struct frame_info *next_frame, void **this_cache,
 		   struct frame_id *this_id)
