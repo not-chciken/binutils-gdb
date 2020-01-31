@@ -679,29 +679,55 @@ z80_frame_this_id (struct frame_info *this_frame, void **this_cache,
 
 static struct value *
 z80_frame_prev_register (struct frame_info *this_frame,
-			 void **this_cache, int regnum)
+			 void **this_prologue_cache, int regnum)
 {
-  /* TODO: implement me */
-  return NULL;
-}
+  struct z80_unwind_cache *info
+    = z80_frame_unwind_cache (this_frame, this_prologue_cache);
 
-/* TODO: find description */
-/*
-static const unsigned char *
-z80_breakpoint_from_pc (struct gdbarch *gdbarch, CORE_ADDR * pcptr, int *lenptr)
-{
+  if (regnum == Z80_PC_REGNUM)
+    {
+      if (trad_frame_addr_p (info->saved_regs,Z80_PC_REGNUM))
+	{
+	  /* Reading the return PC from the PC register is slightly
+	     abnormal. */
+	  ULONGEST pc;
+	  gdb_byte buf[3];
+	  struct gdbarch *gdbarch = get_frame_arch (this_frame);
+	  struct gdbarch_tdep *tdep = gdbarch_tdep (gdbarch);
+	  enum bfd_endian byte_order = gdbarch_byte_order (gdbarch);
+
+          read_memory (info->saved_regs[Z80_PC_REGNUM].addr,
+		       buf, tdep->addr_length);
+	  pc = extract_unsigned_integer(buf, tdep->addr_length, byte_order);
+	  return frame_unwind_got_constant (this_frame, regnum, pc);
+	}
+
+      return frame_unwind_got_optimized (this_frame, regnum);
+    }
+
+  return trad_frame_get_prev_register (this_frame, info->saved_regs, regnum);
 }
-*/
 
 /* Return the breakpoint kind for this target based on *PCPTR. */
 static int
 z80_breakpoint_kind_from_pc (struct gdbarch *gdbarch, CORE_ADDR *pcptr)
 {
-  struct bound_minimal_symbol bh;
-  bh = lookup_minimal_symbol ("__gdb_break_handler", NULL, NULL);
-  if (bh.minsym)
-    return BMSYMBOL_VALUE_ADDRESS (bh);
-  return 0x0008;
+  static int addr = -1;
+  if (addr == -1)
+    {
+      struct bound_minimal_symbol bh;
+      bh = lookup_minimal_symbol ("_break_handler", NULL, NULL);
+      if (bh.minsym)
+	addr = BMSYMBOL_VALUE_ADDRESS (bh);
+      else
+	{
+	  warning(_("Unable to determine inferior's software breakpoint type: "
+		    "couldn't find `_break_handler' function in inferior. Will "
+		    "be used default software breakpoint instruction RST 0x08."));
+	  addr = 0x0008;
+	}
+    }
+  return addr;
 }
 
 /* Return the software breakpoint from KIND. KIND is just address of breakpoint
@@ -731,7 +757,16 @@ z80_sw_breakpoint_from_kind(struct gdbarch *gdbarch, int kind, int *size)
   return break_insn;
 }
 
-/* TODO: find description */
+/*
+static const unsigned char *
+z80_breakpoint_from_pc (struct gdbarch *gdbarch, CORE_ADDR * pcptr, int *lenptr)
+{
+  int kind = z80_breakpoint_kind_from_pc (gdbarch, pcptr);
+  return z80_sw_breakpoint_from_kind (gdbarch, kind, lenptr);
+}
+*/
+
+/* GDB server must always do that itself */
 /*static int
 z80_adjust_breakpoint_address (struct gdbarch *gdbarch, CORE_ADDR bpaddr)
 {
@@ -745,20 +780,85 @@ z80_adjust_breakpoint_address (struct gdbarch *gdbarch, CORE_ADDR bpaddr)
 static std::vector<CORE_ADDR>
 z80_software_single_step (struct regcache *regcache)
 {
+  static const int flag_mask[] = {1 << 6, 1 << 0, 1 << 2, 1 << 7};
   gdb_byte buf[8];
+  ULONGEST t;
   ULONGEST addr;
+  int opcode;
   int size;
   const struct insn_info *info;
   std::vector<CORE_ADDR> ret (1);
+  struct gdbarch *gdbarch = target_gdbarch ();
 
   regcache->cooked_read (Z80_PC_REGNUM, &addr);
   read_memory (addr, buf, sizeof(buf));
   info = z80_get_insn_info (gdbarch, buf, &size);
+  ret[0] = addr + size;
   if (info == NULL) /* possible in case of double prefix */
     { /* forced NOP, TODO: replace by NOP */
-      ret[0] = addr + 1;
       return ret;
     }
+  opcode = buf[size - info->size]; /* take opcode instead of prefix */
+  /* stage 1: check for conditions */
+  switch (info->type)
+    {
+    case insn_djnz_d:
+      regcache->cooked_read (Z80_BC_REGNUM, &t);
+      if ((t & 0xff00) != 0x100)
+	return ret;
+      break;
+    case insn_jr_cc_d:
+      opcode &= 030; /* JR NZ,d has cc equal to 040, but others 000 */
+      /* fall through */
+    case insn_jp_cc_nn:
+    case insn_call_cc_nn:
+    case insn_ret_cc:
+      regcache->cooked_read (Z80_AF_REGNUM, &t);
+      /* lower bit of condition inverts match, so invert flags if not set */
+      if ((opcode & 010) == 0)
+	t = ~t;
+      /* two higher bits of condition field defines flag, so use them only */
+      if (t & flag_mask[(opcode >> 4) & 3])
+	return ret;
+      break;
+    }
+  /* stage 2: compute address */
+  /* TODO: implement eZ80 MADL support */
+  switch (info->type)
+    {
+    case insn_djnz_d:
+    case insn_jr_d:
+    case insn_jr_cc_d:
+      addr += (signed char)buf[size-1];
+      break;
+    case insn_jp_rr:
+      if (size == 1)
+	opcode = Z80_HL_REGNUM;
+      else
+	opcode = (buf[size-2] & 0x20) ? Z80_IY_REGNUM : Z80_IX_REGNUM;
+      regcache->cooked_read (opcode, &addr);
+      break;
+    case insn_jp_nn:
+    case insn_jp_cc_nn:
+    case insn_call_nn:
+    case insn_call_cc_nn:
+      addr = buf[size-1] * 0x100 + buf[size-2];
+      if (info->size > 3) /* long instruction mode */
+	addr = addr * 0x100 + buf[size-3];
+      break;
+    case insn_rst_n:
+      addr = opcode & 070;
+      break;
+    case insn_ret:
+    case insn_ret_cc:
+      regcache->cooked_read (Z80_SP_REGNUM, &addr);
+      read_memory (addr, buf, 3);
+      addr = buf[1] * 0x100 + buf[0];
+      if (gdbarch_bfd_arch_info (gdbarch)->mach == bfd_mach_ez80_adl)
+	addr = addr * 0x100 + buf[2];
+      break;
+    }
+  ret[0] = addr;
   return ret;
 }
 
@@ -847,39 +947,146 @@ z80_displaced_step_location (struct gdbarch *gdbarch)
 }
 #endif
 
+/* Cached, dynamically allocated copies of the target data structures: */
+static unsigned (*cache_ovly_region_table)[3] = 0;
+static unsigned cache_novly_regions;
+static CORE_ADDR cache_ovly_region_table_base = 0;
+enum ovly_index
+  {
+    VMA, OSIZE, MAPPED_TO_LMA
+  };
+
+static void
+z80_free_overlay_region_table (void)
+{
+  if (cache_ovly_region_table)
+    xfree (cache_ovly_region_table);
+  cache_novly_regions = 0;
+  cache_ovly_region_table = NULL;
+  cache_ovly_region_table_base = 0;
+}
+
+/* Read an array of ints of size SIZE from the target into a local buffer.
+   Convert to host order.  int LEN is number of ints.  */
+
+static void
+read_target_long_array (CORE_ADDR memaddr, unsigned int *myaddr,
+                        int len, int size, enum bfd_endian byte_order)
+{
+  /* alloca is safe here, because regions array is very small. */
+  gdb_byte *buf = (gdb_byte *) alloca (len * size);
+  int i;
+
+  read_memory (memaddr, buf, len * size);
+  for (i = 0; i < len; i++)
+    myaddr[i] = extract_unsigned_integer (size * i + buf, size, byte_order);
+}
+
+static int
+z80_read_overlay_region_table (void)
+{
+  struct bound_minimal_symbol novly_regions_msym;
+  struct bound_minimal_symbol ovly_region_table_msym;
+  struct gdbarch *gdbarch;
+  int word_size;
+  enum bfd_endian byte_order;
+
+  z80_free_overlay_region_table ();
+  novly_regions_msym = lookup_minimal_symbol ("_novly_regions", NULL, NULL);
+  if (! novly_regions_msym.minsym)
+    {
+      error (_("Error reading inferior's overlay table: "
+	       "couldn't find `_novly_regions'\n"
+	       "variable in inferior.  Use `overlay manual' mode."));
+      return 0;
+    }
+
+  ovly_region_table_msym = lookup_bound_minimal_symbol ("_ovly_region_table");
+  if (! ovly_region_table_msym.minsym)
+    {
+      error (_("Error reading inferior's overlay table: couldn't find "
+	       "`_ovly_region_table'\n"
+	       "array in inferior.  Use `overlay manual' mode."));
+      return 0;
+    }
+
+  gdbarch = get_objfile_arch (ovly_region_table_msym.objfile);
+  word_size = gdbarch_long_bit (gdbarch) / TARGET_CHAR_BIT;
+  byte_order = gdbarch_byte_order (gdbarch);
+
+  cache_novly_regions = read_memory_integer (
+				BMSYMBOL_VALUE_ADDRESS (novly_regions_msym),
+				4, byte_order);
+  cache_ovly_region_table
+    = (unsigned int (*)[3]) xmalloc (cache_novly_regions *
+					sizeof (*cache_ovly_region_table));
+  cache_ovly_region_table_base
+    = BMSYMBOL_VALUE_ADDRESS (ovly_region_table_msym);
+  read_target_long_array (cache_ovly_region_table_base,
+			  (unsigned int *) cache_ovly_region_table,
+			  cache_novly_regions * 3, word_size, byte_order);
+
+  return 1;                     /* SUCCESS */
+  
+}
+
+static int 
+z80_overlay_update_1 (struct obj_section *osect)
+{
+  int i;
+  asection *bsect = osect->the_bfd_section;
+  unsigned lma;
+  unsigned vma = bfd_section_vma (bsect);
+
+  /* find region corresponding to the section VMA */
+  for (i = 0; i < cache_novly_regions; i++)
+    if (cache_ovly_region_table[i][VMA] == vma)
+	break;
+  if (i == cache_novly_regions)
+    return 0; /* no such region */
+
+  lma = cache_ovly_region_table[i][MAPPED_TO_LMA];
+  i = 0;
+
+  /* we have interest for sections with same VMA */
+  for (objfile *objfile : current_program_space->objfiles ())
+    ALL_OBJFILE_OSECTIONS (objfile, osect)
+      if (section_is_overlay (osect))
+	{
+	  osect->ovly_mapped = (lma == bfd_section_lma (osect->the_bfd_section));
+	  i |= osect->ovly_mapped; /*true, if at least one section is mapped*/
+	}
+  return i;
+}
+
 /* Refresh overlay mapped state for section OSECT. */
 static void 
 z80_overlay_update (struct obj_section *osect)
 {
-  /* TODO: implement me */
-}
+  /* Always need to read the entire table anew. */
+  if (! z80_read_overlay_region_table ())
+    return;
 
-/* Signal translation: translate inferior's signal (target's) number
-   into GDB's representation.  The implementation of this method must
-   be host independent.  IOW, don't rely on symbols of the NAT_FILE
-   header (the nm-*.h files), the host <signal.h> header, or similar
-   headers.  This is mainly used when cross-debugging core files ---
-   "Live" targets hide the translation behind the target interface
-   (target_wait, target_resume, etc.). */
-/*
-static enum gdb_signal
-z80_gdb_signal_from_target (struct gdbarch *gdbarch, int signo)
-{
+  /* Were we given an osect to look up?  NULL means do all of them. */
+  if (osect && z80_overlay_update_1 (osect))
+    return;
+
+  /* Update all sections, even if only one was requested. */
+  for (objfile *objfile : current_program_space->objfiles ())
+    ALL_OBJFILE_OSECTIONS (objfile, osect)
+      if (section_is_overlay (osect))
+        {
+          int i;
+          asection *bsect = osect->the_bfd_section;
+	  unsigned lma = bfd_section_lma (bsect);
+	  unsigned vma = bfd_section_vma (bsect);
+
+          for (i = 0; i < cache_novly_regions; i++)
+            if (cache_ovly_region_table[i][VMA] == vma)
+              osect->ovly_mapped = (cache_ovly_region_table[i][MAPPED_TO_LMA]
+					== lma);
+        }
 }
-*/
-/* Signal translation: translate the GDB's internal signal number into
-   the inferior's signal (target's) representation.  The implementation
-   of this method must be host independent.  IOW, don't rely on symbols
-   of the NAT_FILE header (the nm-*.h files), the host <signal.h>
-   header, or similar headers.
-   Return the target signal number if found, or -1 if the GDB internal
-   signal number is invalid. */
-/*
-static int
-z80_gdb_signal_to_target (struct gdbarch *gdbarch, enum gdb_signal signal)
-{
-}
-*/
 
 /* Return non-zero if the instruction at ADDR is a call; zero otherwise. */
 static int
@@ -1048,12 +1255,17 @@ _initialize_z80_tdep (void)
 /* Table to disassemble machine codes without prefix.  */
 static const struct insn_info
 ez80_main_insn_table[] =
-{
+{ /* table with double prefix check */
+  { 0100, 0377, 0, insn_force_nop}, //double prefix
+  { 0111, 0377, 0, insn_force_nop}, //double prefix
+  { 0122, 0377, 0, insn_force_nop}, //double prefix
+  { 0133, 0377, 0, insn_force_nop}, //double prefix
+  /* initial table for eZ80_z80 */
   { 0100, 0377, 1, insn_z80      }, //eZ80 mode prefix
   { 0111, 0377, 1, insn_z80      }, //eZ80 mode prefix
   { 0122, 0377, 1, insn_adl      }, //eZ80 mode prefix
   { 0133, 0377, 1, insn_adl      }, //eZ80 mode prefix
-/* here common Z80/eZ80 opcodes */
+  /* here common Z80/Z180/eZ80 opcodes */
   { 0000, 0367, 1, insn_default  }, //"nop", "ex af,af'"
   { 0061, 0277, 1, insn_ld_sp_nn }, //"ld sp,nn"
   { 0001, 0317, 3, insn_default  }, //"ld rr,nn"
@@ -1089,7 +1301,12 @@ ez80_main_insn_table[] =
 
 static const struct insn_info
 ez80_adl_main_insn_table[] =
-{
+{ /* table with double prefix check */
+  { 0100, 0377, 0, insn_force_nop}, //double prefix
+  { 0111, 0377, 0, insn_force_nop}, //double prefix
+  { 0122, 0377, 0, insn_force_nop}, //double prefix
+  { 0133, 0377, 0, insn_force_nop}, //double prefix
+  /* initial table for eZ80_adl */
   { 0000, 0367, 1, insn_default  }, //"nop", "ex af,af'"
   { 0001, 0317, 4, insn_default  }, //"ld rr,nn"
   { 0002, 0347, 4, insn_default  }, //"ld (rr),a", "ld a,(rr)"
@@ -1101,10 +1318,10 @@ ez80_adl_main_insn_table[] =
   { 0020, 0377, 2, insn_djnz_d   }, //"djnz dis"
   { 0030, 0377, 2, insn_jr_d     }, //"jr dis"
   { 0040, 0337, 2, insn_jr_cc_d  }, //"jr cc,dis"
-  { 0100, 0377, 1, insn_z80      }, //eZ80 mode prefix
-  { 0111, 0377, 1, insn_z80      }, //eZ80 mode prefix
-  { 0122, 0377, 1, insn_adl      }, //eZ80 mode prefix
-  { 0133, 0377, 1, insn_adl      }, //eZ80 mode prefix
+  { 0100, 0377, 1, insn_z80      }, //eZ80 mode prefix (short instruction)
+  { 0111, 0377, 1, insn_z80      }, //eZ80 mode prefix (short instruction)
+  { 0122, 0377, 1, insn_adl      }, //eZ80 mode prefix (long instruction)
+  { 0133, 0377, 1, insn_adl      }, //eZ80 mode prefix (long instruction)
   { 0100, 0300, 1, insn_default  }, //"ld r,r", "halt"
   { 0200, 0300, 1, insn_default  }, //"alu_op a,r"
   { 0300, 0307, 1, insn_ret_cc   }, //"ret cc"
@@ -1190,12 +1407,12 @@ ez80_ddfd_insn_table[] =
   { 0204, 0306, 1, insn_default }, //"alu_op a,iih", "alu_op a,iil"
   { 0206, 0307, 2, insn_default }, //"alu_op a,(ii+d)"
   { 0313, 0377, 3, insn_default }, //DD/FD CB dd oo instructions
-  { 0335, 0337, 0, insn_force_nop}, //double DD/FD prefix
+  { 0335, 0337, 0, insn_force_nop}, //double DD/FD prefix, exec DD/FD as NOP
   { 0341, 0373, 1, insn_default }, //"pop ii", "push ii"
   { 0343, 0377, 1, insn_default }, //"ex (sp),ii"
   { 0351, 0377, 1, insn_jp_rr   }, //"jp (ii)"
   { 0371, 0377, 1, insn_ld_sp_rr}, //"ld sp,ii"
-  { 0000, 0000, 0, insn_default }  //not an instruction
+  { 0000, 0000, 0, insn_default }  //not an instruction, exec DD/FD as NOP
 };
 
 static const struct insn_info 
@@ -1219,12 +1436,12 @@ ez80_adl_ddfd_insn_table[] =
   { 0204, 0306, 1, insn_default }, //"alu_op a,iih", "alu_op a,iil"
   { 0206, 0307, 2, insn_default }, //"alu_op a,(ii+d)"
   { 0313, 0377, 3, insn_default }, //DD/FD CB dd oo instructions
-  { 0335, 0337, 0, insn_force_nop}, //double DD/FD prefix
+  { 0335, 0337, 0, insn_force_nop}, //double DD/FD prefix, exec DD/FD as NOP
   { 0341, 0373, 1, insn_default }, //"pop ii", "push ii"
   { 0343, 0377, 1, insn_default }, //"ex (sp),ii"
   { 0351, 0377, 1, insn_jp_rr   }, //"jp (ii)"
   { 0371, 0377, 1, insn_ld_sp_rr}, //"ld sp,ii"
-  { 0000, 0000, 0, insn_default }  //not an instruction
+  { 0000, 0000, 0, insn_default }  //not an instruction, exec DD/FD as NOP
 };
 
 /* returns pointer to instruction information structure corresponded to opcode
@@ -1238,14 +1455,11 @@ z80_get_insn_info (struct gdbarch *gdbarch, const gdb_byte *buf, int *size)
   *size = 0;
   switch (mach)
     {
-    default:
-      info = &ez80_main_insn_table[4];
-      break;
     case bfd_mach_ez80_z80:
-      info = &ez80_main_insn_table[0];
+      info = &ez80_main_insn_table[4]; /* skip force_nops */
       break;
     case bfd_mach_ez80_adl:
-      info = &ez80_adl_main_insn_table[0];
+      info = &ez80_adl_main_insn_table[4]; /* skip force_nops */
       break;
 /*
     case bfd_mach_gbz80:
@@ -1255,36 +1469,35 @@ z80_get_insn_info (struct gdbarch *gdbarch, const gdb_byte *buf, int *size)
       info = &z80n_main_insn_table[0];
       break;
 */
+    default:
+      info = &ez80_main_insn_table[8]; /* skip eZ80 prefices and force_nops */
+      break;
     }
   do
     {
       for (; ((code = buf[*size]) & info->mask) != info->code; ++info)
 	;
       *size += info->size;
-      /* check for double prefix */
-      if (info->type == insn_z80 || info->type == insn_adl)
-	switch (buf[*size])
-	  {
-	  case 0x40: /* SIS */
-	  case 0x49: /* LIS */
-	  case 0x52: /* SIL */
-	  case 0x5b: /* LIL */
-	    return NULL; /* force NOP */
-	  }
       /* process instruction type */
       switch (info->type)
 	{
 	case insn_z80:
-	  info = &ez80_main_insn_table[0];
+	  if (mach == bfd_mach_ez80_z80 || mach == bfd_mach_ez80_adl)
+	    info = &ez80_main_insn_table[0];
+	  else
+	    info = &ez80_main_insn_table[8];
 	  break;
 	case insn_adl:
 	  info = &ez80_adl_main_insn_table[0];
 	  break;
 	case insn_z80_ddfd:
-	  info = &ez80_ddfd_insn_table[2];
+	  if (mach == bfd_mach_ez80_z80 || mach == bfd_mach_ez80_adl)
+	    info = &ez80_ddfd_insn_table[0];
+	  else
+	    info = &ez80_ddfd_insn_table[2];
 	  break;
 	case insn_adl_ddfd:
-	  info = &ez80_adl_ddfd_insn_table[2];
+	  info = &ez80_adl_ddfd_insn_table[0];
 	  break;
 	case insn_z80_ed:
 	  info = &ez80_ed_insn_table[0];

@@ -21,9 +21,9 @@
 
 /* if platform supports hardware watchpoints then define all or some of
    following macros by names of functions. Fuctions prototypes:
-     int toggle_watch(int set, void *addr, int size);  // memory write watch
-     int toggle_rwatch(int set, void *addr, int size); // memory read watch
-     int toggle_awatch(int set, void *addr, int size); // memory access watch
+     int toggle_watch(int set, void *addr, size_t size);  // memory write watch
+     int toggle_rwatch(int set, void *addr, size_t size); // memory read watch
+     int toggle_awatch(int set, void *addr, size_t size); // memory access watch
    function must return 0 on success. */
 //#define DBG_WWATCH toggle_watch
 //#define DBG_RWATCH toggle_rwatch
@@ -35,12 +35,14 @@
 /* Define following macro if you need custom memory read/write routine.
    Useful with overlays (bank switching).
    Do not forget to define:
-   _ovly_debug_prepare - function is called before overlay mapping
-   _ovly_debug_event - function is called after overlay mapping
    _ovly_table - overlay table
    _novlys - number of items in _ovly_table
+   or
    _ovly_region_table - overlay regions table
    _novly_regions - number of items in _ovly_region_table
+
+   _ovly_debug_prepare - function is called before overlay mapping
+   _ovly_debug_event - function is called after overlay mapping
  */
 //#define DBG_MEMCPY memcpy
 
@@ -111,6 +113,39 @@ void debug_print(const char *str);
 
 extern int getDebugChar (void);
 extern void putDebugChar (int ch);
+
+#ifdef DBG_SWBREAK
+#define DO_EXPAND(VAL)  VAL ## 123456
+#define EXPAND(VAL)     DO_EXPAND(VAL)
+
+#if EXPAND(DBG_SWBREAK) != 123456
+#define DBG_SWBREAK_PROC DBG_SWBREAK
+extern int DBG_SWBREAK(int set, void *addr);
+#endif
+
+#undef EXPAND
+#undef DO_EXPAND
+#endif /* DBG_SWBREAK */
+
+#ifdef DBG_HWBREAK
+extern int DBG_HWBREAK(int set, void *addr);
+#endif
+
+#ifdef DBG_MEMCPY
+extern void *DBG_MEMCPY (void *dest, const void *src, size_t n);
+#endif
+
+#ifdef DBG_WWATCH
+extern int DBG_WWATCH(int set, void *addr, size_t size);
+#endif
+
+#ifdef DBG_RWATCH
+extern int DBG_RWATCH(int set, void *addr, size_t size);
+#endif
+
+#ifdef DBG_AWATCH
+extern int DBG_AWATCH(int set, void *addr, size_t size);
+#endif
 
 /******************************************************************************\
                                IMPLEMENTATION
@@ -185,6 +220,14 @@ void debug_swbreak (void) __naked
 	SAVE_SP ();
 	save_cpu_state ();
 	stub_main (EX_SWBREAK, -DBG_SWBREAK_SIZE);
+	__asm
+	.globl	_break_handler
+#ifdef DBG_SWBREAK_RST
+	.set	_break_handler, DBG_SWBREAK_RST
+#else
+	.set	_break_handler, _debug_swbreak
+#endif
+	__endasm;
 }
 #endif /* DBG_SWBREAK */
 /******************************************************************************/
@@ -207,7 +250,7 @@ void debug_exception (int ex)
 	stub_main (ex, 0);
 }
 /******************************************************************************/
-void debug_nmi(void)
+void debug_nmi(void) __naked
 {
 	SAVE_SP ();
 	save_cpu_state ();
@@ -222,7 +265,7 @@ void debug_nmi(void)
 	__endasm;
 }
 /******************************************************************************/
-void debug_int(void)
+void debug_int(void) __naked
 {
 	SAVE_SP ();
 	save_cpu_state ();
@@ -465,13 +508,6 @@ process_question (char *p)
 #define STRING2(x) #x
 #define STRING1(x) STRING2(x)
 #define STRING(x) STRING1(x)
-
-#define DO_EXPAND(VAL)  VAL ## 123456
-#define EXPAND(VAL)     DO_EXPAND(VAL)
-
-#if defined(DBG_SWBREAK) && EXPAND(DBG_SWBREAK) != 123456
-#define DBG_SWBREAK_PROC DBG_SWBREAK
-#endif
 
 static int 
 process_q (char *buffer)
