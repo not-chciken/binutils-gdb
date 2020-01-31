@@ -31,13 +31,13 @@
 #define Z80_IX_REGNUM	4
 #define Z80_IY_REGNUM	5
 #define Z80_SP_REGNUM	6
-#define Z80_IR_REGNUM	7
-#define Z80_MBST_REGNUM	8	/* see note below */
-#define Z80_AFa_REGNUM	9
-#define Z80_BCa_REGNUM	10
-#define Z80_DEa_REGNUM	11
-#define Z80_HLa_REGNUM	12
-#define Z80_PC_REGNUM	13
+#define Z80_PC_REGNUM	7
+#define Z80_AFa_REGNUM	8
+#define Z80_BCa_REGNUM	9
+#define Z80_DEa_REGNUM	10
+#define Z80_HLa_REGNUM	11
+#define Z80_IR_REGNUM	12
+#define Z80_MBST_REGNUM	13	/* see note below */
 /* eZ80 only registers */
 #define Z80_SPS_REGNUM	14	/* SPS register of eZ80 CPU */
 #define Z80_SPL_REGNUM	15	/* SPL register of eZ80 CPU */
