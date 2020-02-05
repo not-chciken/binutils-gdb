@@ -171,18 +171,33 @@ typedef unsigned short word;
 #define R_BC    (1*REG_SIZE)
 #define R_DE    (2*REG_SIZE)
 #define R_HL    (3*REG_SIZE)
-#define R_IX    (4*REG_SIZE)
-#define R_IY    (5*REG_SIZE)
-#define R_SP    (6*REG_SIZE)
-#define R_PC    (7*REG_SIZE)
+#define R_SP    (4*REG_SIZE)
+#define R_PC    (5*REG_SIZE)
+
+#ifndef __SDCC_gbz80
+#define R_IX    (6*REG_SIZE)
+#define R_IY    (7*REG_SIZE)
 #define R_AF_   (8*REG_SIZE)
 #define R_BC_   (9*REG_SIZE)
 #define R_DE_   (10*REG_SIZE)
 #define R_HL_   (11*REG_SIZE)
 #define R_IR    (12*REG_SIZE)
-#define R_MBST  (13*REG_SIZE)/* byte1 - MB register of eZ80, byte0: bit0 - IFF2, bit1 - ADL */
+
+#ifdef __SDCC_ez80_adl
+#define R_SPS   (13*REG_SIZE)
 #define NUMREGBYTES (14*REG_SIZE)
+#else
+#define NUMREGBYTES (13*REG_SIZE)
+#endif /* __SDCC_ez80_adl */
+#else
+#define NUMREGBYTES (6*REG_SIZE)
+#define FASTCALL
+#endif /*__SDCC_gbz80 */
 static byte state[NUMREGBYTES];
+
+#ifndef FASTCALL
+#define FASTCALL __z88dk_fastcall
+#endif
 
 /* dedicated stack */
 #ifdef DBG_STACK_SIZE
@@ -202,9 +217,9 @@ char stack[DBG_STACK_SIZE];
 static signed char sigval;
 
 static void stub_main (int sigval, int pc_adj);
-static char high_hex (byte v) __z88dk_fastcall;
-static char low_hex (byte v) __z88dk_fastcall;
-static char put_packet_info (const char *buffer) __z88dk_fastcall;
+static char high_hex (byte v) FASTCALL;
+static char low_hex (byte v) FASTCALL;
+static char put_packet_info (const char *buffer) FASTCALL;
 static void save_cpu_state (void);
 static void rest_cpu_state (void);
 
@@ -292,11 +307,11 @@ void debug_print(const char *str)
 }
 #endif /* DBG_PRINT */
 /******************************************************************************/
-static void store_pc_sp (int pc_adj) __z88dk_fastcall;
+static void store_pc_sp (int pc_adj) FASTCALL;
 #define get_reg_value(mem) (*(void* const*)(mem))
 #define set_reg_value(mem,val) do { (*(void**)(mem) = (val)); } while (0)
 static char* byte2hex(char *buf, byte val);
-static int hex2int (const char **buf) __z88dk_fastcall;
+static int hex2int (const char **buf) FASTCALL;
 static void get_packet (char *buffer);
 static void put_packet (const char *buffer);
 /* Next functions returns 0 on success, else error code, which is sent as "Exx"
@@ -429,7 +444,7 @@ void put_packet (const char *buffer)
 }
 
 static
-char put_packet_info (const char *src) __z88dk_fastcall
+char put_packet_info (const char *src) FASTCALL
 {
 	char ch;
 	char checksum = 0;
@@ -450,7 +465,7 @@ char put_packet_info (const char *src) __z88dk_fastcall
 }
 
 static void
-store_pc_sp (int pc_adj) __z88dk_fastcall
+store_pc_sp (int pc_adj) FASTCALL
 {
 	byte *sp = get_reg_value (&state[R_SP]);
 	byte *pc = get_reg_value (sp);
@@ -718,7 +733,7 @@ byte2hex (char *p, byte v)
 }
 
 static signed char
-hex2val (signed char hex) __z88dk_fastcall
+hex2val (signed char hex) FASTCALL
 {
 	hex -= '0';
 	if (hex <= 9)
@@ -731,7 +746,7 @@ hex2val (signed char hex) __z88dk_fastcall
 }
 
 static int
-hex2byte (const char *p) __z88dk_fastcall
+hex2byte (const char *p) FASTCALL
 {
 	signed char h = hex2val (*p++);
 	if (h < 0)
@@ -743,7 +758,7 @@ hex2byte (const char *p) __z88dk_fastcall
 }
 
 static int
-hex2int (const char **buf) __z88dk_fastcall
+hex2int (const char **buf) FASTCALL
 {
 	word r = 0;
 	const char *p = *buf;
@@ -759,13 +774,13 @@ hex2int (const char **buf) __z88dk_fastcall
 }
 
 static char 
-high_hex (byte v) __z88dk_fastcall
+high_hex (byte v) FASTCALL
 {
 	return low_hex(v >> 4);
 }
 
 static char
-low_hex (byte v) __z88dk_fastcall
+low_hex (byte v) FASTCALL
 {
 	static const char digits[] =
 	{
@@ -809,41 +824,36 @@ static
 void save_cpu_state() __naked
 {
 	__asm
+	ld	(#_state + R_BC), bc
+	ld	(#_state + R_DE), de
 	ld	(#_state + R_HL), hl
 	push	af
 	pop	hl
 	ld	(#_state + R_AF), hl
-	ld	a, r	;R is increased by 6 or by 7 if called via RST
+#ifndef __SDCC_gbz80
+	ld	a, r	;R is increased by 8 or by 9 if called via RST
 	ld	l, a
-	sub	a, 6
+	sub	a, 8
 	xor	a, l
 	and	a, 0x7f
 	xor	a, l
 #ifdef __SDCC_ez80_adl
 	ld	hl, i
-	push	hl
-	dec	sp
-	pop	hl	;load value of I to higher bits of {uHL,HL}
-	inc	sp
-	ld	l, a	;restore R register value
+	ex	de, hl
+	ld	hl, #_state + R_IR
+	ld	(hl), a
+	inc	hl
+	ld	(hl), e
+	inc	hl
+	ld	(hl), d
+	ld	a, MB
+	ld	(#_state + R_AF+2), a
 #else
-	ld	l, a	;restore R register value
+	ld	l, a
 	ld	a, i
 	ld	h, a
-#endif
 	ld	(#_state + R_IR), hl
-#ifdef __SDCC_ez80_adl
-	ld	a, MB
-	ld	h, a
-	ld	l, 0
-#else
-	ld	hl, 0
-#endif
-	jp	po, 10$
-	inc	l
-10$:	ld	(#_state + R_MBST), hl
-	ld	(#_state + R_DE), de
-	ld	(#_state + R_BC), bc
+#endif /* __SDCC_ez80_adl */
 	ld	(#_state + R_IX), ix
 	ld	(#_state + R_IY), iy
 	ex	af, af'	;'
@@ -854,11 +864,12 @@ void save_cpu_state() __naked
 	push	af
 	pop	hl
 	ld	(#_state + R_AF_), hl
+#endif /* __SDCC_gbz80 */
 	ret
 	__endasm;
 }
 
-/* restore all state.and continue execution */
+/* restore CPU state and continue execution */
 static
 void rest_cpu_state() __naked
 {
@@ -868,12 +879,13 @@ void rest_cpu_state() __naked
 	ld	hl, (#_state + R_PC)
 	push	hl	/* resume address */
 #ifdef __SDCC_ez80_adl
-	ld	hl, 0xc30000
+	ld	hl, 0xc30000 ; use 0xc34000 for jp.s
 #else
 	ld	hl, 0xc300
 #endif
-	push	de	/* JP opcode */
-#endif
+	push	hl	/* JP opcode */
+#endif /* DBG_USE_TRAMPOLINE */
+#ifndef __SDCC_gbz80
 	ld	hl, (#_state + R_AF_)
 	push	hl
 	pop	af
@@ -884,27 +896,27 @@ void rest_cpu_state() __naked
 	ex	af, af'	;'
 	ld	iy, (#_state + R_IY)
 	ld	ix, (#_state + R_IX)
-	ld	bc, (#_state + R_BC)
-	ld	de, (#_state + R_DE)
 #ifdef __SDCC_ez80_adl
-	ld	a, (#_state + R_MBST + 1)
+	ld	a, (#_state + R_AF + 2)
 	ld	MB, a
-#endif
-	ld	hl, (#_state + R_IR + 1)
-#ifdef __SDCC_z80_adl
+	ld	hl, (#_state + R_IR + 1) ;I register
 	ld	i, hl
-	ld	a, (#_state + R_IR)
+	ld	a, (#_state + R_IR + 0) ; R register
 	ld	l, a
 #else
+	ld	hl, (#_state + R_IR)
 	ld	a, h
 	ld	i, a
 	ld	a, l
-#endif
-	sub	a, 8	;number of M1 cycles after ld r,a
+#endif /* __SDCC_ez80_adl */
+	sub	a, 10	;number of M1 cycles after ld r,a
 	xor	a, l
 	and	a, 0x7f
 	xor	a, l
 	ld	r, a
+#endif /* __SDCC_gbz80 */
+	ld	de, (#_state + R_DE)
+	ld	bc, (#_state + R_BC)
 	ld	hl, (#_state + R_AF)
 	push	hl
 	pop	af
@@ -920,8 +932,7 @@ void rest_cpu_state() __naked
 #else
 	jp	#_stack + DBG_STACK_SIZE - 3
 #endif
-#endif
+#endif /* DBG_USE_TRAMPOLINE */
 	ret
 	__endasm;
 }
-

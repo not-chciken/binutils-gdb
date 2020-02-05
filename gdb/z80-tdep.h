@@ -28,34 +28,22 @@
 #define Z80_BC_REGNUM	1
 #define Z80_DE_REGNUM	2
 #define Z80_HL_REGNUM	3
-#define Z80_IX_REGNUM	4
-#define Z80_IY_REGNUM	5
-#define Z80_SP_REGNUM	6
-#define Z80_PC_REGNUM	7
-#define Z80_AFa_REGNUM	8
-#define Z80_BCa_REGNUM	9
-#define Z80_DEa_REGNUM	10
-#define Z80_HLa_REGNUM	11
+#define Z80_SP_REGNUM	4	/* SPL on eZ80 CPU */
+#define Z80_PC_REGNUM	5
+#define Z80_IX_REGNUM	6
+#define Z80_IY_REGNUM	7
+#define Z80_AFA_REGNUM	8
+#define Z80_BCA_REGNUM	9
+#define Z80_DEA_REGNUM	10
+#define Z80_HLA_REGNUM	11
 #define Z80_IR_REGNUM	12
-#define Z80_MBST_REGNUM	13	/* see note below */
 /* eZ80 only registers */
-#define Z80_SPS_REGNUM	14	/* SPS register of eZ80 CPU */
-#define Z80_SPL_REGNUM	15	/* SPL register of eZ80 CPU */
+#define Z80_SPS_REGNUM	13	/* SPS register of eZ80 CPU */
 
-/*
- MBST:
-   bit0: IFF1 (useful for simulators)
-   bit1: IFF2
-   bit2: ADL (eZ80 only)
-   bit3-7: always 0
-   bit8-15: eZ80 register MB
-   bit15-23: always 0 (eZ80 ADL mode only)
-*/
-
-#define Z80_NUM_REGS	14
+#define Z80_NUM_REGS	13
 #define Z80_REG_BYTES	(Z80_NUM_REGS*2)
 
-#define EZ80_NUM_REGS	(Z80_NUM_REGS + 2)
+#define EZ80_NUM_REGS	(Z80_NUM_REGS + 1)
 #define EZ80_REG_BYTES	(EZ80_NUM_REGS*3)
 
 #endif /* z80-tdep.h */
