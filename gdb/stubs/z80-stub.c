@@ -265,6 +265,7 @@ void debug_exception (int ex)
 	stub_main (ex, 0);
 }
 /******************************************************************************/
+#ifndef __SDCC_gbz80
 void debug_nmi(void) __naked
 {
 	SAVE_SP ();
@@ -279,6 +280,7 @@ void debug_nmi(void) __naked
 	retn
 	__endasm;
 }
+#endif
 /******************************************************************************/
 void debug_int(void) __naked
 {
@@ -819,21 +821,89 @@ hex2mem (byte *mem, const char *buf, unsigned bytes)
 	return buf;
 }
 
+#ifdef __SDCC_gbz80
 /* saves all state.except PC and SP */
 static
 void save_cpu_state() __naked
 {
 	__asm
-	ld	(#_state + R_BC), bc
-	ld	(#_state + R_DE), de
+	push	af
+	ld	a, l
+	ld	(#_state + R_HL + 0), a
+	ld	a, h
+	ld	(#_state + R_HL + 1), a
+	ld	hl, #_state + R_HL - 1
+	ld	(hl), d
+	dec	hl
+	ld	(hl), e
+	dec	hl
+	ld	(hl), b
+	dec	hl
+	ld	(hl), c
+	dec	hl
+	pop	bc
+	ld	(hl), b
+	dec	hl
+	ld	(hl), c
+	ret
+	__endasm;
+}
+
+/* restore CPU state and continue execution */
+static
+void rest_cpu_state() __naked
+{
+	__asm
+;restore SP
+	ld	a, (#_state + R_SP + 0)
+	ld	l,a
+	ld	a, (#_state + R_SP + 1)
+	ld	h,a
+	ld	sp, hl
+;push PC value as return address
+	ld	a, (#_state + R_PC + 0)
+	ld	l, a
+	ld	a, (#_state + R_PC + 1)
+	ld	h, a
+	push	hl
+;restore registers
+	ld	hl, #_state + R_AF
+	ld	c, (hl)
+	inc	hl
+	ld	b, (hl)
+	inc	hl
+	push	bc
+	ld	c, (hl)
+	inc	hl
+	ld	b, (hl)
+	inc	hl
+	ld	e, (hl)
+	inc	hl
+	ld	d, (hl)
+	inc	hl
+	ld	a, (hl)
+	inc	hl
+	ld	h, (hl)
+	ld	l, a
+	pop	af
+	ret
+	__endasm;
+}
+#else
+/* saves all state.except PC and SP */
+static
+void save_cpu_state() __naked
+{
+	__asm
 	ld	(#_state + R_HL), hl
+	ld	(#_state + R_DE), de
+	ld	(#_state + R_BC), bc
 	push	af
 	pop	hl
 	ld	(#_state + R_AF), hl
-#ifndef __SDCC_gbz80
-	ld	a, r	;R is increased by 8 or by 9 if called via RST
+	ld	a, r	;R is increased by 7 or by 8 if called via RST
 	ld	l, a
-	sub	a, 8
+	sub	a, 7
 	xor	a, l
 	and	a, 0x7f
 	xor	a, l
@@ -864,7 +934,6 @@ void save_cpu_state() __naked
 	push	af
 	pop	hl
 	ld	(#_state + R_AF_), hl
-#endif /* __SDCC_gbz80 */
 	ret
 	__endasm;
 }
@@ -885,13 +954,12 @@ void rest_cpu_state() __naked
 #endif
 	push	hl	/* JP opcode */
 #endif /* DBG_USE_TRAMPOLINE */
-#ifndef __SDCC_gbz80
 	ld	hl, (#_state + R_AF_)
 	push	hl
 	pop	af
-	ld	hl, (#_state + R_HL_)
-	ld	de, (#_state + R_DE_)
 	ld	bc, (#_state + R_BC_)
+	ld	de, (#_state + R_DE_)
+	ld	hl, (#_state + R_HL_)
 	exx
 	ex	af, af'	;'
 	ld	iy, (#_state + R_IY)
@@ -914,7 +982,6 @@ void rest_cpu_state() __naked
 	and	a, 0x7f
 	xor	a, l
 	ld	r, a
-#endif /* __SDCC_gbz80 */
 	ld	de, (#_state + R_DE)
 	ld	bc, (#_state + R_BC)
 	ld	hl, (#_state + R_AF)
@@ -924,15 +991,16 @@ void rest_cpu_state() __naked
 #ifndef DBG_USE_TRAMPOLINE
 	ld	hl, (#_state + R_PC)
 	push	hl
-#endif
 	ld	hl, (#_state + R_HL)
-#ifdef DBG_USE_TRAMPOLINE
+	ret
+#else
+	ld	hl, (#_state + R_HL)
 #ifdef __SDCC_ez80_adl
 	jp	#_stack + DBG_STACK_SIZE - 4
 #else
 	jp	#_stack + DBG_STACK_SIZE - 3
 #endif
 #endif /* DBG_USE_TRAMPOLINE */
-	ret
 	__endasm;
 }
+#endif /* __SDCC_gbz80 */
