@@ -154,10 +154,12 @@ z80_register_name (struct gdbarch *gdbarch, int regnum)
   static const char *register_names[] =
   {
     /* 24 bit on eZ80, else 16 bit */
-    "af", "bc", "de", "hl", "ix", "iy", "sp", "pc",
-    "ir", "mbst", "af_", "bc_", "de_", "hl_",
+    "af", "bc", "de", "hl",
+    "sp", "pc", "ix", "iy",
+    "af'", "bc'", "de'", "hl'",
+    "ir",
     /* eZ80 only */
-    "sps", "spl"
+    "sps"
   };
 
   if (regnum >= 0 && regnum < ARRAY_SIZE (register_names))
@@ -176,13 +178,7 @@ z80_register_type (struct gdbarch *gdbarch, int reg_nr)
 }
 
 /* next 2 functions check buffer for instruction. If it is pop/push rr, then it
-   returns register number:
-     0x10 - BC
-     0x11 - DE
-     0x12 - HL
-     0x13 - AF
-     0x22 - IX
-     0x32 - IY */
+   returns register number OR'ed with 0x100 */
 static int
 z80_is_pop_rr (const gdb_byte buf[], int *size)
 {
