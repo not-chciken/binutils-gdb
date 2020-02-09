@@ -127,6 +127,9 @@ extern void z80_elf_final_processing (void);
 /* Z80 instructions are 1 or 4 bytes long.  */
 #define DWARF2_LINE_MIN_INSN_LENGTH	1
 
+/* Enable cfi directives.  */
+#define TARGET_USE_CFIPOP	1
+
 /* 16 bits addresses are used on Z80.  */
 #define DWARF2_ADDR_SIZE(bfd)		z80_dwarf2_addr_size(bfd)
 extern int z80_dwarf2_addr_size (const bfd *abfd);
