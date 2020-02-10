@@ -472,9 +472,8 @@ store_pc_sp (int pc_adj) FASTCALL
 	byte *sp = get_reg_value (&state[R_SP]);
 	byte *pc = get_reg_value (sp);
 	pc += pc_adj;
-	sp += REG_SIZE;
 	set_reg_value (&state[R_PC], pc);
-	set_reg_value (&state[R_SP], sp);
+	set_reg_value (&state[R_SP], sp + REG_SIZE);
 }
 
 static char *mem2hex(char *buf, const byte *mem, unsigned bytes);
@@ -735,15 +734,17 @@ byte2hex (char *p, byte v)
 }
 
 static signed char
-hex2val (signed char hex) FASTCALL
+hex2val (char hex) FASTCALL
 {
 	hex -= '0';
-	if (hex <= 9)
-		return hex;
-	hex -= 'A' - '0' - 10;
-	if (hex <= 16)
-		return hex;
-	hex -= 'a' - 'A';
+	if ((byte)hex >= 10) {
+		hex -= 'A' - '0' - 10;
+		if ((byte)hex >= 16) {
+			hex -= 'a' - 'A';
+			if ((byte)hex >= 16)
+				hex = 0xff;
+		}
+	}
 	return hex;
 }
 
@@ -751,27 +752,23 @@ static int
 hex2byte (const char *p) FASTCALL
 {
 	signed char h = hex2val (*p++);
-	if (h < 0)
-		return -1;
 	signed char l = hex2val (*p);
-	if (l < 0)
+	if (h < 0 || l < 0)
 		return -1;
-	return (h << 4) | l;
+	return (byte)((byte)h << 4) | (byte)l;
 }
 
 static int
 hex2int (const char **buf) FASTCALL
 {
 	word r = 0;
-	const char *p = *buf;
-	for (;; p++) {
-		int a = hex2val(*p);
+	for (;; (*buf)++) {
+		signed char a = hex2val(**buf);
 		if (a < 0)
 			break;
 		r <<= 4;
-		r |= (byte)a;
+		r += (byte)a;
 	}
-	*buf = p;
 	return (int)r;
 }
 
@@ -784,8 +781,18 @@ high_hex (byte v) FASTCALL
 static char
 low_hex (byte v) FASTCALL
 {
-	static const char digits[] =
-	{
+/*	__asm
+	ld	a, l
+	and	0x0f
+	add	a, 0x90
+	daa
+	adc	a, 0x40
+	daa
+	ld	l, a
+	__endasm;
+	(void)v;*/
+
+	static const char digits[] = {
 		'0','1','2','3','4','5','6','7',
 		'8','9','a','b','c','d','e','f'
 	};
