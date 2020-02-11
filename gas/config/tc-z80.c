@@ -612,9 +612,16 @@ z80_start_line_hook (void)
 	      return 1;
 	    }
 	  break;
-	case '#':
-	  if (sdcc_compat)
-	    *p = (*skip_space (p + 1) == '(') ? '+' : ' ';
+	case '#': /* force to use next expression as immediate value in SDCC */
+	  if (!sdcc_compat)
+	   break;
+	  if (ISSPACE(p[1]) && *skip_space (p + 1) == '(')
+	    { /* ld a,# (expr)... -> ld a,0+(expr)... */
+	      *p++ = '0';
+	      *p = '+';
+	    }
+	  else /* ld a,#(expr)... -> ld a,+(expr); ld a,#expr -> ld a, expr */
+	    *p = (p[1] == '(') ? '+' : ' ';
 	  break;
 	}
     }
@@ -887,7 +894,11 @@ parse_exp_not_indexed (const char *s, expressionS *op)
       p = skip_space (p);
     }
 
-  op->X_md = indir = is_indir (p);
+  if (make_shift == -1)
+    indir = is_indir (p);
+  else
+    indir = 0;
+  op->X_md = indir;
   if (indir && (ins_ok & INS_GBZ80))
     { /* check for instructions like ld a,(hl+), ld (hl-),a */
       p = skip_space (p+1);
