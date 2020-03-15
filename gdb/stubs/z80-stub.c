@@ -739,7 +739,7 @@ byte2hex (char *p, byte v)
 }
 
 static signed char
-hex2val (signed char hex) FASTCALL __naked
+hex2val (signed char hex) FASTCALL
 {
 	hex -= '0';
 	if (hex < 10)
