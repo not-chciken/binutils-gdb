@@ -344,7 +344,7 @@ static char* byte2hex(char *buf, byte val);
 static int hex2int (const char **buf) FASTCALL;
 static void get_packet (char *buffer);
 static void put_packet (const char *buffer);
-static signed char process (char *buffer) FASTCALL;
+static void process (char *buffer) FASTCALL;
 
 static void
 stub_main (int ex, int pc_adj)
@@ -356,20 +356,7 @@ stub_main (int ex, int pc_adj)
 	/* after starting gdb_stub must alwars return stop reason */
 	*buffer = '?';
 	for (;;) {
-		signed char err = process (buffer);
-		if (err > 0) {
-			char *p = buffer;
-			*p++ = 'E';
-			p = byte2hex (p, err);
-			*p = '\0';
-		} else if (err < 0) 
-			*buffer = '\0';
-		else if (*buffer == '\0') {
-			char *p = buffer;
-			*p++ = 'O';
-			*p++ = 'K';
-			*p = '\0';
-		}
+		process (buffer);
 		put_packet (buffer);
 		get_packet (buffer);
 	}
@@ -717,7 +704,7 @@ process_zZ (char *buffer) FASTCALL
 }
 
 static signed char
-process (char *buffer) FASTCALL
+do_process (char *buffer) FASTCALL
 {
 	switch (*buffer) {
 	case '?': return process_question (buffer);
@@ -733,6 +720,25 @@ process (char *buffer) FASTCALL
 //	case 's': return process_s (buffer);
 	case 'z': return process_zZ (buffer);
 	default:  return -1; /* empty response */
+	}
+}
+
+static void
+process (char *buffer) FASTCALL
+{
+	signed char err = do_process (buffer);
+	if (err > 0) {
+		char *p = buffer;
+		*p++ = 'E';
+		p = byte2hex (p, err);
+		*p = '\0';
+	} else if (err < 0)
+		*buffer = '\0';
+	else if (*buffer == '\0') {
+		char *p = buffer;
+		*p++ = 'O';
+		*p++ = 'K';
+		*p = '\0';
 	}
 }
 
