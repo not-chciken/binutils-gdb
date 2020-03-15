@@ -316,41 +316,7 @@ static char* byte2hex(char *buf, byte val);
 static int hex2int (const char **buf) FASTCALL;
 static void get_packet (char *buffer);
 static void put_packet (const char *buffer);
-/* Next functions returns 0 on success, else error code, which is sent as "Exx"
-   to debugger. On success buffer content will be sent. */
-static int process_question (char *buffer);
-static int process_q (char *buffer);
-static int process_g (char *buffer);
-static int process_G (char *buffer);
-static int process_m (char *buffer);
-static int process_M (char *buffer);
-static int process_X (char *buffer);
-//static int process_s (char *buffer);
-static int process_c (char *buffer);
-static int process_k (char *buffer);
-static int process_zZ (char *buffer);
-static int process_unknown (char *buffer);
-
-static const
-struct parser_info
-{
-	char cmd;
-	int (*func)(char *buf);
-} parsers[] = {
-	{ '?', process_question },
-	{ 'G', process_G },
-	{ 'K', process_k },
-	{ 'M', process_M },
-	{ 'X', process_X },
-	{ 'Z', process_zZ },
-	{ 'c', process_c },
-	{ 'g', process_g },
-	{ 'm', process_m },
-	{ 'q', process_q },
-//	{ 's', process_s },
-	{ 'z', process_zZ },
-	{ 0,   process_unknown }
-};
+static signed char process (char *buffer) FASTCALL;
 
 static
 void stub_main (int ex, int pc_adj)
@@ -359,17 +325,14 @@ void stub_main (int ex, int pc_adj)
 	sigval = (signed char)ex;
 	store_pc_sp (pc_adj);
 
-	process_question (buffer);
+	*buffer = '?';
+	process (buffer);
 	put_packet (buffer);
 
 	for (;;) {
 		*buffer = '\0';
 		get_packet (buffer);
-		//find parser
-		const struct parser_info *p = &parsers[0];
-		for (; p->cmd && p->cmd != *buffer; p++);
-		//process
-		int err = p->func (buffer);
+		signed char err = process (buffer);
 		if (err > 0) {
 			char *p = buffer;
 			*p++ = 'E';
@@ -480,8 +443,12 @@ store_pc_sp (int pc_adj) FASTCALL
 static char *mem2hex(char *buf, const byte *mem, unsigned bytes);
 static char *hex2mem(byte *mem, const char *buf, unsigned bytes);
 
-static int
-process_question (char *p)
+/* Command processors. Takes pointer to buffer (begins from command symbol),
+   modifies buffer, returns: -1 - empty response (ignore), 0 - success,
+   positive: error code. */
+
+static signed char
+process_question (char *p) FASTCALL
 {
 	*p++ = 'T';
 	p = byte2hex (p, sigval <= 0 ? EX_SIGTRAP : (byte)sigval);
@@ -526,8 +493,8 @@ process_question (char *p)
 #define STRING1(x) STRING2(x)
 #define STRING(x) STRING1(x)
 
-static int
-process_q (char *buffer)
+static signed char
+process_q (char *buffer) FASTCALL
 {
 	static const char supported[] =
 		"PacketSize=" STRING(DBG_PACKET_SIZE)
@@ -546,24 +513,25 @@ process_q (char *buffer)
 	return -1;
 }
 
-static int
-process_g (char *buffer)
+static signed char
+process_g (char *buffer) FASTCALL
 {
 	buffer = mem2hex (buffer, state, NUMREGBYTES);
 	*buffer = '\0';
 	return 0;
 }
 
-static int
-process_G (char *buffer)
+static signed char
+process_G (char *buffer) FASTCALL
 {
 	hex2mem (state, buffer, NUMREGBYTES);
 	/* OK response */
-	*buffer = 0;
+	*buffer = '\0';
 	return 0;
 }
-static int
-process_m (char *buffer)
+
+static signed char
+process_m (char *buffer) FASTCALL
 {/* mAA..AA,LLLL  Read LLLL bytes at address AA..AA */
 	char *p = buffer;
 	++p;
@@ -594,8 +562,8 @@ process_m (char *buffer)
 	return 0;
 }
 
-static int
-process_M (char *buffer)
+static signed char
+process_M (char *buffer) FASTCALL
 {/* MAA..AA,LLLL: Write LLLL bytes at address AA.AA return OK */
 	char *p = buffer;
 	++p;
@@ -630,8 +598,8 @@ end:
 	return 0;
 }
 
-static int
-process_X (char *buffer)
+static signed char
+process_X (char *buffer) FASTCALL
 {/* XAA..AA,LLLL: Write LLLL binary bytes at address AA.AA return OK */
 	char *p = buffer;
 	++p;
@@ -657,10 +625,10 @@ end:
 	return 0;
 }
 
-//static int process_s (char *buffer);
+//static int process_s (char *buffer) FASTCALL;
 
-static int
-process_c (char *buffer)
+static signed char
+process_c (char *buffer) FASTCALL
 {/* 'cAAAA' - Continue at address AAAA(optional) */
 	const char *p = buffer;
 	if (*p != '\0') {
@@ -673,20 +641,20 @@ process_c (char *buffer)
 	return 0;
 }
 
-static int
-process_k (char *buffer)
+static signed char
+process_k (char *buffer) FASTCALL
 {/* 'k' - Kill the program */
 	__asm
 	rst	0	;TODO: make proper program restart
 	__endasm;
 	/* OK response */
-	*buffer = 0;
+	*buffer = '\0';
 	return 0;
 }
 
-static int
-process_zZ (char *buffer) /* insert/remove breakpoint */
-{
+static signed char
+process_zZ (char *buffer) FASTCALL
+{ /* insert/remove breakpoint */
 #if defined(DBG_SWBREAK_PROC) || defined(DBG_HWBREAK) || defined(DBG_WWATCH) || defined(DBG_RWATCH) || defined(DBG_AWATCH)
 	const int set = (*buffer == 'Z');
 	const char *p = &buffer[3];
@@ -723,11 +691,24 @@ process_zZ (char *buffer) /* insert/remove breakpoint */
 	return -1;
 }
 
-static int
-process_unknown (char *buffer)
+static signed char
+process (char *buffer) FASTCALL
 {
-	(void)buffer;
-	return -1; /* empty response */
+	switch (*buffer) {
+	case '?': return process_question (buffer);
+	case 'G': return process_G (buffer);
+	case 'K': return process_k (buffer);
+	case 'M': return process_M (buffer);
+	case 'X': return process_X (buffer);
+	case 'Z': return process_zZ (buffer);
+	case 'c': return process_c (buffer);
+	case 'g': return process_g (buffer);
+	case 'm': return process_m (buffer);
+	case 'q': return process_q (buffer);
+//	case 's': return process_s (buffer);
+	case 'z': return process_zZ (buffer);
+	default:  return -1; /* empty response */
+	}
 }
 
 static char *
