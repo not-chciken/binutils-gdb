@@ -355,12 +355,7 @@ stub_main (int ex, int pc_adj)
 
 	/* after starting gdb_stub must alwars return stop reason */
 	*buffer = '?';
-	process (buffer);
-	put_packet (buffer);
-
 	for (;;) {
-		*buffer = '\0';
-		get_packet (buffer);
 		signed char err = process (buffer);
 		if (err > 0) {
 			char *p = buffer;
@@ -376,6 +371,7 @@ stub_main (int ex, int pc_adj)
 			*p = '\0';
 		}
 		put_packet (buffer);
+		get_packet (buffer);
 	}
 }
 
