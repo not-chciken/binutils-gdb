@@ -52,7 +52,7 @@
 /* max GDB packet size
    should be much more that DBG_STACK_SIZE because it will be allocated on stack
 */
-#define DBG_PACKET_SIZE 128
+#define DBG_PACKET_SIZE 150
 
 /* Uncomment if required to use trampoline when resuming operation.
    Useful with dedicated stack when stack pointer do not point to the stack or
@@ -289,7 +289,7 @@ void debug_int(void) __naked
 	__asm
 	ld	hl, 0	;pc_adj
 	push	hl
-	ld	hl, DBG_NMI_EX
+	ld	hl, DBG_INT_EX
 	push	hl
 	ld	hl, _stub_main
 	push	hl
@@ -302,7 +302,7 @@ void debug_print(const char *str)
 {
 	putDebugChar ('$');
 	putDebugChar ('O');
-	char csum = 'O' + put_packet_info (buffer);
+	char csum = 'O' + put_packet_info (str);
 	putDebugChar ('#');
 	putDebugChar (high_hex (csum));
 	putDebugChar (low_hex (csum));
@@ -390,12 +390,12 @@ void stub_main (int ex, int pc_adj)
 static
 void get_packet (char *buffer)
 {
-	char csum;
+	byte csum;
 	char ch;
 	char *p;
-	char esc;
+	byte esc;
 #if DBG_PACKET_SIZE <= 256
-	byte count;
+	byte count; /* it is OK to use up to 256 here */
 #else
 	unsigned count;
 #endif
@@ -420,6 +420,7 @@ retry:
 			} else
 				esc = 0x20;
 		} while (--count);
+
 		*p = '\0';
 		if (ch == '#' && /* packet is not too large */
 			getDebugChar () == high_hex (csum) &&
@@ -479,7 +480,7 @@ store_pc_sp (int pc_adj) FASTCALL
 static char *mem2hex(char *buf, const byte *mem, unsigned bytes);
 static char *hex2mem(byte *mem, const char *buf, unsigned bytes);
 
-static int 
+static int
 process_question (char *p)
 {
 	*p++ = 'T';
@@ -525,23 +526,27 @@ process_question (char *p)
 #define STRING1(x) STRING2(x)
 #define STRING(x) STRING1(x)
 
-static int 
+static int
 process_q (char *buffer)
 {
-	if (strncmp(buffer + 1, "Supported", 9) == 0)
-		strcpy (buffer,
-			"PacketSize=" STRING(DBG_PACKET_SIZE)
+	static const char supported[] =
+		"PacketSize=" STRING(DBG_PACKET_SIZE)
 #ifdef DBG_SWBREAK_PROC
-			";swbreak"
+		";swbreak"
 #endif
 #ifdef DBG_HWBREAK
-			";hwbreak"
+		";hwbreak"
 #endif
-		);
-	return 0;
+	;
+	if (strncmp(buffer + 1, "Supported", 9) == 0) {
+		memcpy (buffer, supported, sizeof(supported));
+		return 0;
+	}
+	*buffer = '\0';
+	return -1;
 }
 
-static int 
+static int
 process_g (char *buffer)
 {
 	buffer = mem2hex (buffer, state, NUMREGBYTES);
@@ -549,7 +554,7 @@ process_g (char *buffer)
 	return 0;
 }
 
-static int 
+static int
 process_G (char *buffer)
 {
 	hex2mem (state, buffer, NUMREGBYTES);
@@ -679,7 +684,7 @@ process_k (char *buffer)
 	return 0;
 }
 
-static int 
+static int
 process_zZ (char *buffer) /* insert/remove breakpoint */
 {
 #if defined(DBG_SWBREAK_PROC) || defined(DBG_HWBREAK) || defined(DBG_WWATCH) || defined(DBG_RWATCH) || defined(DBG_AWATCH)
@@ -718,7 +723,7 @@ process_zZ (char *buffer) /* insert/remove breakpoint */
 	return -1;
 }
 
-static int 
+static int
 process_unknown (char *buffer)
 {
 	(void)buffer;
@@ -734,18 +739,31 @@ byte2hex (char *p, byte v)
 }
 
 static signed char
-hex2val (char hex) FASTCALL
+hex2val (signed char hex) FASTCALL __naked
 {
 	hex -= '0';
-	if ((byte)hex >= 10) {
-		hex -= 'A' - '0' - 10;
-		if ((byte)hex >= 16) {
-			hex -= 'a' - 'A';
-			if ((byte)hex >= 16)
-				hex = 0xff;
-		}
-	}
+	if (hex < 10)
+		return hex;
+	hex -= 'A' - '0' - 10;
+	if (hex < 16)
+		return hex;
+	hex -= 'a' - 'A';
 	return hex;
+	/*__asm
+	ld	a, l
+	ld	l, -1
+	sub	a, '0'
+	ret	c
+	cp	a, 10
+	jr	c, 99$
+	sub	a, 'A' - '0' - 10
+	ret	c
+	cp	a, 16
+	jr	c, 99$
+	sub	a, 'a' - 'A'
+99$:	ld	l, a
+	ret
+	__endasm;*/
 }
 
 static int
