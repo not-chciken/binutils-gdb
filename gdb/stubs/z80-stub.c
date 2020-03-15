@@ -201,17 +201,16 @@ static byte state[NUMREGBYTES];
 
 /* dedicated stack */
 #ifdef DBG_STACK_SIZE
-static 
-char stack[DBG_STACK_SIZE];
-#define SAVE_SP() __asm\
-	ld	(_state + R_SP), sp\
-	ld	sp, _stack + DBG_STACK_SIZE\
-	__endasm
+
+#define LOAD_SP	ld	sp, #_stack + DBG_STACK_SIZE
+
+static char stack[DBG_STACK_SIZE];
+
 #else
+
 #undef DBG_USE_TRAMPOLINE
-#define SAVE_SP() __asm\
-	ld	(_state + R_SP), sp\
-	__endasm
+#define LOAD_SP
+
 #endif
 
 static signed char sigval;
@@ -232,15 +231,20 @@ static void rest_cpu_state (void);
 #endif
 void debug_swbreak (void) __naked
 {
-	SAVE_SP ();
-	save_cpu_state ();
-	stub_main (EX_SWBREAK, -DBG_SWBREAK_SIZE);
 	__asm
+	ld	(#_state + R_SP), sp
+	LOAD_SP
+	call	_save_cpu_state
+	ld	hl, #-DBG_SWBREAK_SIZE
+	push	hl
+	ld	hl, #EX_SWBREAK
+	push	hl
+	call	_stub_main
 	.globl	_break_handler
 #ifdef DBG_SWBREAK_RST
-	.set	_break_handler, DBG_SWBREAK_RST
+_break_handler = DBG_SWBREAK_RST
 #else
-	.set	_break_handler, _debug_swbreak
+_break_handler = _debug_swbreak
 #endif
 	__endasm;
 }
@@ -250,32 +254,54 @@ void debug_swbreak (void) __naked
 #ifndef DBG_HWBREAK_SIZE
 #define DBG_HWBREAK_SIZE 0
 #endif /* DBG_HWBREAK_SIZE */
-void debug_hwbreak (void)
+void debug_hwbreak (void) __naked
 {
-	SAVE_SP ();
-	save_cpu_state ();
-	stub_main (EX_HWBREAK, -DBG_HWBREAK_SIZE);
+	__asm
+	ld	(#_state + R_SP), sp
+	LOAD_SP
+	call	_save_cpu_state
+	ld	hl, #-DBG_HWBREAK_SIZE
+	push	hl
+	ld	hl, #EX_HWBREAK
+	push	hl
+	call	_stub_main
+	__endasm;
 }
 #endif /* DBG_HWBREAK_SET */
 /******************************************************************************/
-void debug_exception (int ex)
+void debug_exception (int ex) __naked
 {
-	SAVE_SP ();
-	save_cpu_state ();
-	stub_main (ex, 0);
+	__asm
+	ld	(#_state + R_SP), sp
+	LOAD_SP
+	call	_save_cpu_state
+	ld	hl, #0
+	push	hl
+	ld	hl, (#_state + R_SP)
+	inc	hl
+	inc	hl
+	ld	e, (hl)
+	inc	hl
+	ld	d, (hl)
+	push	de
+	call	_stub_main
+	__endasm;
+	(void)ex;
 }
 /******************************************************************************/
 #ifndef __SDCC_gbz80
 void debug_nmi(void) __naked
 {
-	SAVE_SP ();
-	save_cpu_state ();
 	__asm
-	ld	hl, 0	;pc_adj
+	ld	(#_state + R_SP), sp
+	LOAD_SP
+	call	_save_cpu_state
+	ld	hl, #0	;pc_adj
 	push	hl
-	ld	hl, DBG_NMI_EX
+	ld	hl, #DBG_NMI_EX
 	push	hl
-	ld	hl, _stub_main
+	ld	hl, #_stub_main
+	push	hl
 	push	hl
 	retn
 	__endasm;
@@ -284,14 +310,16 @@ void debug_nmi(void) __naked
 /******************************************************************************/
 void debug_int(void) __naked
 {
-	SAVE_SP ();
-	save_cpu_state ();
 	__asm
-	ld	hl, 0	;pc_adj
+	ld	(#_state + R_SP), sp
+	LOAD_SP
+	call	_save_cpu_state
+	ld	hl, #0	;pc_adj
 	push	hl
-	ld	hl, DBG_INT_EX
+	ld	hl, #DBG_INT_EX
 	push	hl
-	ld	hl, _stub_main
+	ld	hl, #_stub_main
+	push	hl
 	push	hl
 	reti
 	__endasm;
@@ -318,13 +346,14 @@ static void get_packet (char *buffer);
 static void put_packet (const char *buffer);
 static signed char process (char *buffer) FASTCALL;
 
-static
-void stub_main (int ex, int pc_adj)
+static void
+stub_main (int ex, int pc_adj)
 {
 	char buffer[DBG_PACKET_SIZE+1];
 	sigval = (signed char)ex;
 	store_pc_sp (pc_adj);
 
+	/* after starting gdb_stub must alwars return stop reason */
 	*buffer = '?';
 	process (buffer);
 	put_packet (buffer);
@@ -350,8 +379,8 @@ void stub_main (int ex, int pc_adj)
 	}
 }
 
-static
-void get_packet (char *buffer)
+static void
+get_packet (char *buffer)
 {
 	byte csum;
 	char ch;
@@ -389,7 +418,7 @@ retry:
 			getDebugChar () == high_hex (csum) &&
 			getDebugChar () == low_hex (csum)) {
 			break;
-		} else 
+		} else
 			putDebugChar ('-');
 	}
 	putDebugChar ('+');
@@ -909,9 +938,9 @@ void save_cpu_state() __naked
 	ld	(#_state + R_AF), hl
 	ld	a, r	;R is increased by 7 or by 8 if called via RST
 	ld	l, a
-	sub	a, 7
+	sub	a, #7
 	xor	a, l
-	and	a, 0x7f
+	and	a, #0x7f
 	xor	a, l
 #ifdef __SDCC_ez80_adl
 	ld	hl, i
@@ -983,9 +1012,9 @@ void rest_cpu_state() __naked
 	ld	i, a
 	ld	a, l
 #endif /* __SDCC_ez80_adl */
-	sub	a, 10	;number of M1 cycles after ld r,a
+	sub	a, #10	;number of M1 cycles after ld r,a
 	xor	a, l
-	and	a, 0x7f
+	and	a, #0x7f
 	xor	a, l
 	ld	r, a
 	ld	de, (#_state + R_DE)
