@@ -353,7 +353,7 @@ stub_main (int ex, int pc_adj)
 	sigval = (signed char)ex;
 	store_pc_sp (pc_adj);
 
-	/* after starting gdb_stub must alwars return stop reason */
+	/* after starting gdb_stub must always return stop reason */
 	*buffer = '?';
 	for (;;) {
 		process (buffer);
