@@ -277,7 +277,14 @@ void debug_exception (int ex) __naked
 	call	_save_cpu_state
 	ld	hl, #0
 	push	hl
+#ifdef __SDCC_gbz80
+	ld	hl, #_state + R_SP
+	ld	a, (hl+)
+	ld	h, (hl)
+	ld	l, a
+#else
 	ld	hl, (#_state + R_SP)
+#endif
 	inc	hl
 	inc	hl
 	ld	e, (hl)
