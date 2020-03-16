@@ -751,31 +751,13 @@ byte2hex (char *p, byte v)
 }
 
 static signed char
-hex2val (signed char hex) FASTCALL
+hex2val (unsigned char hex) FASTCALL
 {
-	hex -= '0';
-	if (hex < 10)
-		return hex;
-	hex -= 'A' - '0' - 10;
-	if (hex < 16)
-		return hex;
-	hex -= 'a' - 'A';
-	return hex;
-	/*__asm
-	ld	a, l
-	ld	l, -1
-	sub	a, '0'
-	ret	c
-	cp	a, 10
-	jr	c, 99$
-	sub	a, 'A' - '0' - 10
-	ret	c
-	cp	a, 16
-	jr	c, 99$
-	sub	a, 'a' - 'A'
-99$:	ld	l, a
-	ret
-	__endasm;*/
+	if (hex <= '9')
+		return hex - '0';
+	hex &= 0xdf; /* make uppercase */
+	hex -= 'A' - 10;
+	return (hex >= 10 && hex < 16) ? hex : -1;
 }
 
 static int
