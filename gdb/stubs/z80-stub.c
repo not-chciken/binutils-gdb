@@ -802,20 +802,19 @@ low_hex (byte v) FASTCALL
 {
 /*	__asm
 	ld	a, l
-	and	0x0f
-	add	a, 0x90
+	and	a, #0x0f
+	add	a, #0x90
 	daa
-	adc	a, 0x40
+	adc	a, #0x40
 	daa
 	ld	l, a
 	__endasm;
 	(void)v;*/
-
-	static const char digits[] = {
-		'0','1','2','3','4','5','6','7',
-		'8','9','a','b','c','d','e','f'
-	};
-	return digits[v & 0x0f];
+	v &= 0x0f;
+	v += '0';
+	if (v < '9'+1)
+		return v;
+	return v + 'a' - '0' - 10;
 }
 
 /* convert the memory, pointed to by mem into hex, placing result in buf */
