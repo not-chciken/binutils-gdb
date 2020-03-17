@@ -24,21 +24,24 @@
    Order optimized for gdb-stub implementation
    Most of register pairs are 16 bit length on Z80 and
    24 bit on eZ80 in ADL or MADL modes */
-#define Z80_AF_REGNUM	0
-#define Z80_BC_REGNUM	1
-#define Z80_DE_REGNUM	2
-#define Z80_HL_REGNUM	3
-#define Z80_SP_REGNUM	4	/* SPL on eZ80 CPU */
-#define Z80_PC_REGNUM	5
-#define Z80_IX_REGNUM	6
-#define Z80_IY_REGNUM	7
-#define Z80_AFA_REGNUM	8
-#define Z80_BCA_REGNUM	9
-#define Z80_DEA_REGNUM	10
-#define Z80_HLA_REGNUM	11
-#define Z80_IR_REGNUM	12
+enum z80_regnum
+{
+  Z80_AF_REGNUM,
+  Z80_BC_REGNUM,
+  Z80_DE_REGNUM,
+  Z80_HL_REGNUM,
+  Z80_SP_REGNUM,	/* SPL on eZ80 CPU */
+  Z80_PC_REGNUM,
+  Z80_IX_REGNUM,
+  Z80_IY_REGNUM,
+  Z80_AFA_REGNUM,
+  Z80_BCA_REGNUM,
+  Z80_DEA_REGNUM,
+  Z80_HLA_REGNUM,
+  Z80_IR_REGNUM,
 /* eZ80 only registers */
-#define Z80_SPS_REGNUM	13	/* SPS register of eZ80 CPU */
+  Z80_SPS_REGNUM	/* SPS register of eZ80 CPU */
+};
 
 #define Z80_NUM_REGS	13
 #define Z80_REG_BYTES	(Z80_NUM_REGS*2)
