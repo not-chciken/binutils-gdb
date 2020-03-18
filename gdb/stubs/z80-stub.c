@@ -399,9 +399,10 @@ retry:
 			if (ch != '}') {
 				*p++ = ch ^ esc;
 				esc = 0;
+				--count;
 			} else
 				esc = 0x20;
-		} while (--count);
+		} while (count != 0);
 
 		*p = '\0';
 		if (ch == '#' && /* packet is not too large */
