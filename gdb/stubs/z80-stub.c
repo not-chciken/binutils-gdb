@@ -650,9 +650,8 @@ end:
 static signed char
 process_c (char *buffer) FASTCALL
 {/* 'cAAAA' - Continue at address AAAA(optional) */
-	const char *p = buffer;
+	const char *p = &buffer[1];
 	if (*p != '\0') {
-		++p;
 		void *addr = (void*)hex2int(&p);
 		set_reg_value (&state[R_PC], addr);
 	}
