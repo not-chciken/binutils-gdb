@@ -553,8 +553,7 @@ process_G (char *buffer) FASTCALL
 static signed char
 process_m (char *buffer) FASTCALL
 {/* mAA..AA,LLLL  Read LLLL bytes at address AA..AA */
-	char *p = buffer;
-	++p;
+	char *p = &buffer[1];
 	byte *addr = (void*)hex2int(&p);
 	if (*p++ != ',')
 		return 1;
@@ -585,18 +584,17 @@ process_m (char *buffer) FASTCALL
 static signed char
 process_M (char *buffer) FASTCALL
 {/* MAA..AA,LLLL: Write LLLL bytes at address AA.AA return OK */
-	char *p = buffer;
-	++p;
+	char *p = &buffer[1];
 	byte *addr = (void*)hex2int(&p);
 	if (*p != ',')
 		return 1;
 	++p;
-	int len = (unsigned)hex2int(&p);
+	unsigned len = (unsigned)hex2int(&p);
 	if (*p++ != ':')
 		return 2;
 	if (len == 0)
 		goto end;
-	if (len > (DBG_PACKET_SIZE - (p - buffer))/2)
+	if (len*2 + (p - buffer) > DBG_PACKET_SIZE)
 		return 3;
 #ifdef GDB_MEMCPY
 	do {
@@ -621,18 +619,17 @@ end:
 static signed char
 process_X (char *buffer) FASTCALL
 {/* XAA..AA,LLLL: Write LLLL binary bytes at address AA.AA return OK */
-	char *p = buffer;
-	++p;
+	char *p = &buffer[1];
 	byte *addr = (void*)hex2int(&p);
 	if (*p != ',')
 		return 1;
 	++p;
-	int len = (unsigned)hex2int(&p);
+	unsigned len = (unsigned)hex2int(&p);
 	if (*p++ != ':')
 		return 2;
 	if (len == 0)
 		goto end;
-	if (len > DBG_PACKET_SIZE - (p - buffer))
+	if (len + (p - buffer) > DBG_PACKET_SIZE)
 		return 3;
 #ifdef GDB_MEMCPY
 	GDB_MEMCPY(addr, p, len);
@@ -770,8 +767,8 @@ hex2val (unsigned char hex) FASTCALL
 static int
 hex2byte (const char *p) FASTCALL
 {
-	signed char h = hex2val (*p++);
-	signed char l = hex2val (*p);
+	signed char h = hex2val (p[0]);
+	signed char l = hex2val (p[1]);
 	if (h < 0 || l < 0)
 		return -1;
 	return (byte)((byte)h << 4) | (byte)l;
