@@ -197,7 +197,7 @@ typedef unsigned short word;
 #endif /*__SDCC_gbz80 */
 static byte state[NUMREGBYTES];
 
-#if DBG_PACKET_SIZE < (NUMREGBYTES*2+3)
+#if DBG_PACKET_SIZE < (NUMREGBYTES*2+4)
 #error "Too small DBG_PACKET_SIZE"
 #endif
 
