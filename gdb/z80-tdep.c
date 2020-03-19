@@ -1280,13 +1280,13 @@ ez80_main_insn_table[] =
   { 0301, 0317, 1, insn_pop_rr   }, //"pop rr"
   { 0302, 0307, 3, insn_jp_cc_nn }, //"jp cc,nn"
   { 0303, 0377, 3, insn_jp_nn    }, //"jp nn"
-  { 0304, 0307, 3, insn_jp_cc_nn }, //"call cc,nn"
+  { 0304, 0307, 3, insn_call_cc_nn}, //"call cc,nn"
   { 0305, 0317, 1, insn_push_rr  }, //"push rr"
   { 0306, 0307, 2, insn_default  }, //"alu_op a,n"
   { 0307, 0307, 1, insn_rst_n    }, //"rst n"
   { 0311, 0377, 1, insn_ret      }, //"ret"
   { 0313, 0377, 2, insn_default  }, //CB prefix
-  { 0315, 0377, 3, insn_jp_nn    }, //"call nn"
+  { 0315, 0377, 3, insn_call_nn  }, //"call nn"
   { 0323, 0367, 2, insn_default  }, //"out (n),a", "in a,(n)"
   { 0335, 0337, 1, insn_z80_ddfd }, //DD/FD prefix
   { 0351, 0377, 1, insn_jp_rr    }, //"jp (hl)"
@@ -1324,13 +1324,13 @@ ez80_adl_main_insn_table[] =
   { 0301, 0317, 1, insn_pop_rr   }, //"pop rr"
   { 0302, 0307, 4, insn_jp_cc_nn }, //"jp cc,nn"
   { 0303, 0377, 4, insn_jp_nn    }, //"jp nn"
-  { 0304, 0307, 4, insn_jp_cc_nn }, //"call cc,nn"
+  { 0304, 0307, 4, insn_call_cc_nn}, //"call cc,nn"
   { 0305, 0317, 1, insn_push_rr  }, //"push rr"
   { 0306, 0307, 2, insn_default  }, //"alu_op a,n"
   { 0307, 0307, 1, insn_rst_n    }, //"rst n"
   { 0311, 0377, 1, insn_ret      }, //"ret"
   { 0313, 0377, 2, insn_default  }, //CB prefix
-  { 0315, 0377, 4, insn_jp_nn    }, //"call nn"
+  { 0315, 0377, 4, insn_call_nn  }, //"call nn"
   { 0323, 0367, 2, insn_default  }, //"out (n),a", "in a,(n)"
   { 0335, 0337, 1, insn_adl_ddfd }, //DD/FD prefix
   { 0351, 0377, 1, insn_jp_rr    }, //"jp (hl)"
