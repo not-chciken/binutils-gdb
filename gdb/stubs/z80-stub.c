@@ -546,8 +546,7 @@ process_q (char *buffer) FASTCALL
 static signed char
 process_g (char *buffer) FASTCALL
 {
-	buffer = mem2hex (buffer, state, NUMREGBYTES);
-	*buffer = '\0';
+	mem2hex (buffer, state, NUMREGBYTES);
 	return 0;
 }
 
@@ -588,7 +587,6 @@ process_m (char *buffer) FASTCALL
 #else
 	p = mem2hex (p, addr, len);
 #endif
-	*p = '\0';
 	return 0;
 }
 
