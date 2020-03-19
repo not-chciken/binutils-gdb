@@ -810,10 +810,11 @@ z80_software_single_step (struct regcache *regcache)
     case insn_call_cc_nn:
     case insn_ret_cc:
       regcache->cooked_read (Z80_AF_REGNUM, &t);
-      /* lower bit of condition inverts match, so invert flags if not set */
-      if ((opcode & 010) == 0)
+      /* lower bit of condition inverts match, so invert flags if set */
+      if ((opcode & 010) != 0)
 	t = ~t;
-      /* two higher bits of condition field defines flag, so use them only */
+      /* two higher bits of condition field defines flag, so use them only
+         to check condition of "not execute" */
       if (t & flag_mask[(opcode >> 4) & 3])
 	return ret;
       break;
