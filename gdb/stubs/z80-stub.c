@@ -550,7 +550,7 @@ process_g (char *buffer) FASTCALL
 static signed char
 process_G (char *buffer) FASTCALL
 {
-	hex2mem (state, buffer, NUMREGBYTES);
+	hex2mem (state, &buffer[1], NUMREGBYTES);
 	/* OK response */
 	*buffer = '\0';
 	return 0;
