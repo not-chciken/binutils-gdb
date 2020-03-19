@@ -197,7 +197,7 @@ typedef unsigned short word;
 #endif /*__SDCC_gbz80 */
 static byte state[NUMREGBYTES];
 
-#if DBG_PACKET_SIZE < (NUMREGBYTES*2+4)
+#if DBG_PACKET_SIZE < (NUMREGBYTES*2+5)
 #error "Too small DBG_PACKET_SIZE"
 #endif
 
@@ -476,8 +476,12 @@ static char *hex2mem(byte *mem, const char *buf, unsigned bytes);
 static signed char
 process_question (char *p) FASTCALL
 {
+	signed char sig;
 	*p++ = 'T';
-	p = byte2hex (p, sigval <= 0 ? EX_SIGTRAP : (byte)sigval);
+	sig = sigval;
+	if (sig <= 0)
+		sig = EX_SIGTRAP;
+	p = byte2hex (p, (byte)sig);
 #if defined(DBG_SWBREAK_PROC) || defined(DBG_HWBREAK) || defined(DBG_WWATCH) || defined(DBG_RWATCH) || defined(DBG_AWATCH)
 	switch (ex) {
 #ifdef DBG_SWBREAK_PROC
