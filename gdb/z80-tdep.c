@@ -822,6 +822,8 @@ z80_software_single_step (struct regcache *regcache)
   /* TODO: implement eZ80 MADL support */
   switch (info->type)
     {
+    default:
+      return ret;
     case insn_djnz_d:
     case insn_jr_d:
     case insn_jr_cc_d:
