@@ -33,6 +33,8 @@
 #define DBG_HWBREAK_SIZE 0
 
 /* Define following macro if you need custom memory read/write routine.
+   Function should return non-zero on success, and zero on failure
+   (for example, write to ROM area).
    Useful with overlays (bank switching).
    Do not forget to define:
    _ovly_table - overlay table
@@ -194,6 +196,10 @@ typedef unsigned short word;
 #define FASTCALL
 #endif /*__SDCC_gbz80 */
 static byte state[NUMREGBYTES];
+
+#if DBG_PACKET_SIZE < (NUMREGBYTES*2+3)
+#error "Too small DBG_PACKET_SIZE"
+#endif
 
 #ifndef FASTCALL
 #define FASTCALL __z88dk_fastcall
@@ -472,13 +478,13 @@ process_question (char *p) FASTCALL
 {
 	*p++ = 'T';
 	p = byte2hex (p, sigval <= 0 ? EX_SIGTRAP : (byte)sigval);
-#if defined(DBG_WWATCH) || defined(DBG_RWATCH) || defined(DBG_AWATCH)
+#if defined(DBG_SWBREAK_PROC) || defined(DBG_HWBREAK) || defined(DBG_WWATCH) || defined(DBG_RWATCH) || defined(DBG_AWATCH)
 	switch (ex) {
-/*#ifdef DBG_SWBREAK
+#ifdef DBG_SWBREAK_PROC
 	case EX_SWBREAK:
 		strcpy (p, " swbreak:");
 		return;
-#endif*/
+#endif
 #ifdef DBG_HWBREAK
 	case EX_HWBREAK:
 		strcpy (p, " hwbreak:");
@@ -504,7 +510,7 @@ process_question (char *p) FASTCALL
 	/* TODO: add support for watchpoint address */
 	*p++ = '0';
 	*p++ = '0';
-#endif /*DBG_WWATCH, DBG_RWATCH, DBG_AWATCH */
+#endif /* DBG_HWBREAK, DBG_WWATCH, DBG_RWATCH, DBG_AWATCH */
 	*p++ = '\0';
 	return 0;
 }
@@ -519,10 +525,10 @@ process_q (char *buffer) FASTCALL
 	static const char supported[] =
 		"PacketSize=" STRING(DBG_PACKET_SIZE)
 #ifdef DBG_SWBREAK_PROC
-		";swbreak"
+		";swbreak+"
 #endif
 #ifdef DBG_HWBREAK
-		";hwbreak"
+		";hwbreak+"
 #endif
 	;
 	if (strncmp(buffer + 1, "Supported", 9) == 0) {
@@ -569,7 +575,8 @@ process_m (char *buffer) FASTCALL
 		unsigned tlen = sizeof(tmp);
 		if (tlen > len)
 			tlen = len;
-		GDB_MEMCPY(tmp, addr, tlen);
+		if (!GDB_MEMCPY(tmp, addr, tlen))
+			return 4;
 		p = mem2hex (p, tmp, tlen);
 		addr += tlen;
 		len -= tlen;
@@ -603,7 +610,8 @@ process_M (char *buffer) FASTCALL
 		if (tlen > len)
 			tlen = len;
 		p = hex2mem (tmp, p, tlen);
-		GDB_MEMCPY(addr, tmp, tlen);
+		if (!GDB_MEMCPY(addr, tmp, tlen))
+			return 4;
 		addr += tlen;
 		len -= tlen;
 	} while (len);
@@ -632,7 +640,8 @@ process_X (char *buffer) FASTCALL
 	if (len + (p - buffer) > DBG_PACKET_SIZE)
 		return 3;
 #ifdef GDB_MEMCPY
-	GDB_MEMCPY(addr, p, len);
+	if (!GDB_MEMCPY(addr, p, len))
+		return 4;
 #else
 	memcpy (addr, p, len);
 #endif
