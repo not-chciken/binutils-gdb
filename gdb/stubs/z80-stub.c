@@ -1,6 +1,7 @@
 /******************************************************************************\
                              Configuration
 \******************************************************************************/
+#ifndef DBG_CONFIGURED
 /* Comment this line out if software breakpoints are unsupported.
    If you have special function to toggle software breakpoints, then provide
    here name of these function. Expected prototype:
@@ -66,6 +67,14 @@
 
 #define DBG_NMI_EX EX_HWBREAK
 #define DBG_INT_EX EX_SIGINT
+
+/* Define following macro to instruction(s), which will be executes before return
+   control to program. It is useful when gdb-stub is placed in one of overlays.
+   This procedure must not change any register. On top of stack before invocation
+   is return address of the program. */
+//#define DBG_RESUME jp _restore_bank
+
+#endif /* DBG_CONFIGURED */
 /******************************************************************************\
                              Public Interface
 \******************************************************************************/
@@ -134,19 +143,19 @@ extern int DBG_HWBREAK(int set, void *addr);
 #endif
 
 #ifdef DBG_MEMCPY
-extern void *DBG_MEMCPY (void *dest, const void *src, size_t n);
+extern void* DBG_MEMCPY (void *dest, const void *src, unsigned n);
 #endif
 
 #ifdef DBG_WWATCH
-extern int DBG_WWATCH(int set, void *addr, size_t size);
+extern int DBG_WWATCH(int set, void *addr, unsigned size);
 #endif
 
 #ifdef DBG_RWATCH
-extern int DBG_RWATCH(int set, void *addr, size_t size);
+extern int DBG_RWATCH(int set, void *addr, unsigned size);
 #endif
 
 #ifdef DBG_AWATCH
-extern int DBG_AWATCH(int set, void *addr, size_t size);
+extern int DBG_AWATCH(int set, void *addr, unsigned size);
 #endif
 
 /******************************************************************************\
@@ -217,6 +226,10 @@ static char stack[DBG_STACK_SIZE];
 #undef DBG_USE_TRAMPOLINE
 #define LOAD_SP
 
+#endif
+
+#ifndef DBG_RESUME
+#define DBG_RESUME ret
 #endif
 
 static signed char sigval;
@@ -483,16 +496,16 @@ process_question (char *p) FASTCALL
 		sig = EX_SIGTRAP;
 	p = byte2hex (p, (byte)sig);
 #if defined(DBG_SWBREAK_PROC) || defined(DBG_HWBREAK) || defined(DBG_WWATCH) || defined(DBG_RWATCH) || defined(DBG_AWATCH)
-	switch (ex) {
+	switch (sig) {
 #ifdef DBG_SWBREAK_PROC
 	case EX_SWBREAK:
 		strcpy (p, " swbreak:");
-		return;
+		break;
 #endif
 #ifdef DBG_HWBREAK
 	case EX_HWBREAK:
 		strcpy (p, " hwbreak:");
-		return;
+		break;
 #endif
 #ifdef DBG_WWATCH
 	case EX_WWATCH:
@@ -689,7 +702,7 @@ process_zZ (char *buffer) FASTCALL
 	if (*p != ',')
 		return 2;
 	p++;
-	int kind = (void*)hex2int(&p);
+	int kind = hex2int(&p);
 	switch (buffer[1]) {
 #ifdef DBG_SWBREAK_PROC
 	case '0': /* sw break */
@@ -1025,7 +1038,7 @@ void rest_cpu_state() __naked
 	ld	hl, (#_state + R_PC)
 	push	hl
 	ld	hl, (#_state + R_HL)
-	ret
+	DBG_RESUME
 #else
 	ld	hl, (#_state + R_HL)
 #ifdef __SDCC_ez80_adl
