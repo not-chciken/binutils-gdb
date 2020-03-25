@@ -265,11 +265,13 @@ z80_is_push_rr (const gdb_byte buf[], int *size)
 	push	iy
      2) save and adjust frame pointer
        a) call to special function (size optimization)
-	call	___sdcc_enteZ80_IX_REGNUM
+	call	___sdcc_enter_ix
        b) inline (speed optimization)
 	push	ix
 	ld	ix, #0
 	add	ix, sp
+       c) without FP, but saving it (IX is optimized out)
+	push	ix
      3) allocate local variables
        a) via series of PUSH AF and optional DEC SP (size optimization)
 	push	af
@@ -349,7 +351,7 @@ z80_scan_prologue (struct gdbarch *gdbarch, CORE_ADDR pc_beg, CORE_ADDR pc_end,
   if (prologue[pos] == 0xcd) /* call nn */
     {
       struct bound_minimal_symbol msymbol;
-      msymbol = lookup_minimal_symbol ("__sdcc_enteZ80_IX_REGNUM", NULL, NULL);
+      msymbol = lookup_minimal_symbol ("__sdcc_enter_ix", NULL, NULL);
       if (msymbol.minsym)
 	{
 	  value = BMSYMBOL_VALUE_ADDRESS (msymbol);
@@ -364,6 +366,11 @@ z80_scan_prologue (struct gdbarch *gdbarch, CORE_ADDR pc_beg, CORE_ADDR pc_end,
            !memcmp (&prologue[pos+4+addr_len], "\335\071\335\371", 4))
     { /* push ix; ld ix, #0; add ix, sp; ld sp, ix */
       pos += 4 + addr_len + 4;
+      info->prologue_type.fp_sdcc = 1;
+    }
+  else if (!memcmp (&prologue[pos], "\335\345", 2))
+    { /* push ix */
+      pos += 2;
       info->prologue_type.fp_sdcc = 1;
     }
 
