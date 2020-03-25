@@ -32,6 +32,7 @@
 #include "symfile.h"
 
 #include "z80-tdep.h"
+#include "features/z80.c"
 
 /* You need to define __gdb_break_handler symbol pointing to the breakpoint
    handler. Value of the symbol will be used to determine instruction for
@@ -1256,6 +1257,7 @@ void
 _initialize_z80_tdep (void)
 {
   register_gdbarch_init (bfd_arch_z80, z80_gdbarch_init);
+  initialize_tdesc_z80 ();
 }
 
 /* Table to disassemble machine codes without prefix.  */

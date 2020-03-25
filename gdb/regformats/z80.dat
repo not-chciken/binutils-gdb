@@ -1,0 +1,18 @@
+# THIS FILE IS GENERATED.  -*- buffer-read-only: t -*- vi :set ro:
+# Generated from: z80.xml
+name:z80
+xmltarget:z80.xml
+expedite:sp,pc
+16:af
+16:bc
+16:de
+16:hl
+16:sp
+32:pc
+16:ix
+16:iy
+16:af'
+16:bc'
+16:de'
+16:hl'
+16:ir
