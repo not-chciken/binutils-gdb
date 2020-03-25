@@ -2,6 +2,9 @@
                              Configuration
 \******************************************************************************/
 #ifndef DBG_CONFIGURED
+/* Uncomment this line, if stub size is critical for you */
+//#define DBG_MIN_SIZE
+
 /* Comment this line out if software breakpoints are unsupported.
    If you have special function to toggle software breakpoints, then provide
    here name of these function. Expected prototype:
@@ -399,7 +402,8 @@ static int hex2int (const char **buf) FASTCALL;
 static char* int2hex (char *buf, int v);
 static void get_packet (char *buffer);
 static void put_packet (const char *buffer);
-static void process (char *buffer) FASTCALL;
+static char process (char *buffer) FASTCALL;
+static void rest_cpu_state (void);
 
 static void
 stub_main (int ex, int pc_adj)
@@ -412,11 +416,12 @@ stub_main (int ex, int pc_adj)
 
 	/* after starting gdb_stub must always return stop reason */
 	*buffer = '?';
-	for (;;) {
-		process (buffer);
+	for (; process (buffer);) {
 		put_packet (buffer);
 		get_packet (buffer);
 	}
+	put_packet (buffer);
+	rest_cpu_state ();
 }
 
 static void
@@ -526,90 +531,105 @@ store_pc_sp (int pc_adj) FASTCALL
 	set_reg_value (&state[R_SP], sp + REG_SIZE);
 }
 
-static char *mem2hex(char *buf, const byte *mem, unsigned bytes);
-static char *hex2mem(byte *mem, const char *buf, unsigned bytes);
+static char *mem2hex (char *buf, const byte *mem, unsigned bytes);
+static char *hex2mem (byte *mem, const char *buf, unsigned bytes);
 
 /* Command processors. Takes pointer to buffer (begins from command symbol),
    modifies buffer, returns: -1 - empty response (ignore), 0 - success,
    positive: error code. */
 
+#ifdef DBG_MIN_SIZE
 static signed char
 process_question (char *p) FASTCALL
 {
 	signed char sig;
+	*p++ = 'S';
+	sig = sigval;
+	if (sig <= 0)
+		sig = EX_SIGTRAP;
+	p = byte2hex (p, (byte)sig);
+	*p = '\0';
+	return 0;
+}
+#else /* DBG_MIN_SIZE */
+static char *format_reg_value (char *p, unsigned reg_num, const byte *value);
+static signed char
+process_question (char *p) FASTCALL
+{
+	signed char sig;
+	const char *reason;
+	unsigned addr;
 	*p++ = 'T';
 	sig = sigval;
 	if (sig <= 0)
 		sig = EX_SIGTRAP;
 	p = byte2hex (p, (byte)sig);
+	p = format_reg_value(p, R_AF/REG_SIZE, &state[R_AF]);
+	p = format_reg_value(p, R_SP/REG_SIZE, &state[R_SP]);
+	p = format_reg_value(p, R_PC/REG_SIZE, &state[R_PC]);
 #if defined(DBG_SWBREAK_PROC) || defined(DBG_HWBREAK) || defined(DBG_WWATCH) || defined(DBG_RWATCH) || defined(DBG_AWATCH)
-	switch (sig) {
+	addr = 0;
+	switch (sigval) {
 #ifdef DBG_SWBREAK_PROC
 	case EX_SWBREAK:
-		strcpy (p, " swbreak:");
+		reason = "swbreak";
 		break;
 #endif
 #ifdef DBG_HWBREAK
 	case EX_HWBREAK:
-		strcpy (p, " hwbreak:");
+		reason = "hwbreak";
 		break;
 #endif
 #ifdef DBG_WWATCH
 	case EX_WWATCH:
-		strcpy (p, " watch:");
+		reason = "watch";
+		addr = 1;
 		break;
 #endif
 #ifdef DBG_RWATCH
 	case EX_RWATCH:
-		strcpy (p, " rwatch:");
+		reason = "rwatch";
+		addr = 1;
 		break;
 #endif
 #ifdef DBG_AWATCH
 	case EX_AWATCH:
-		strcpy (p, " awatch:");
+		reason = "awatch";
+		addr = 1;
 		break;
 #endif
 	default:
 		goto finish;
 	}
-	for (; *p != '\0'; p++);
-	/* TODO: add support for watchpoint address */
-	*p++ = '0';
-	*p++ = '0';
-#endif /* DBG_HWBREAK, DBG_WWATCH, DBG_RWATCH, DBG_AWATCH */
+	while ((*p++ = *reason++))
+		;
+	--p;
+	*p++ = ':';
+	if (addr != 0)
+		p = int2hex(p, addr);
+	*p++ = ';';
 finish:
+#endif /* DBG_HWBREAK, DBG_WWATCH, DBG_RWATCH, DBG_AWATCH */
 	*p++ = '\0';
 	return 0;
 }
+#endif /* DBG_MINSIZE */
 
 #define STRING2(x) #x
 #define STRING1(x) STRING2(x)
 #define STRING(x) STRING1(x)
 #ifdef DBG_MEMORY_MAP
-static void
-read_memory_map (char *buffer, unsigned offset, unsigned length)
-{
-	const char *map = DBG_MEMORY_MAP;
-	const unsigned map_sz = strlen(map);
-	if (offset >= map_sz) {
-		buffer[0] = 'l';
-		buffer[1] = '\0';
-		return;
-	}
-	if (offset + length > map_sz)
-		length = map_sz - offset;
-	buffer[0] = 'm';
-	memcpy (&buffer[1], &map[offset], length);
-	buffer[1+length] = '\0';
-}
+static void read_memory_map (char *buffer, unsigned offset, unsigned length);
 #endif
+
 static signed char
 process_q (char *buffer) FASTCALL
 {
 	char *p;
-	if (strncmp (buffer + 1, "Supported", 9) == 0) {
+	if (memcmp (buffer + 1, "Supported", 9) == 0) {
 		memcpy (buffer, "PacketSize=", 11);
 		p = int2hex (&buffer[11], DBG_PACKET_SIZE);
+#ifndef DBG_MIN_SIZE
 #ifdef DBG_SWBREAK_PROC
 		memcpy (p, ";swbreak+", 9);
 		p += 9;
@@ -618,6 +638,8 @@ process_q (char *buffer) FASTCALL
 		memcpy (p, ";hwbreak+", 9);
 		p += 9;
 #endif
+#endif /* DBG_MIN_SIZE */
+
 #ifdef DBG_MEMORY_MAP
 		memcpy (p, ";qXfer:memory-map:read+", 23);
 		p += 23;
@@ -626,7 +648,7 @@ process_q (char *buffer) FASTCALL
 		return 0;
 	}
 #ifdef DBG_MEMORY_MAP
-	if (strncmp (buffer + 1, "Xfer:memory-map:read:", 21) == 0) {
+	if (memcmp (buffer + 1, "Xfer:memory-map:read:", 21) == 0) {
 		p = strchr (buffer + 1 + 21, ':');
 		if (p == NULL)
 			return 1;
@@ -643,6 +665,14 @@ process_q (char *buffer) FASTCALL
 		return 0;
 	}
 #endif
+#ifndef DBG_MIN_SIZE
+	if (memcmp (&buffer[1], "Attached", 9) == 0) {
+		/* Just report that GDB attached to existing process
+		   if it is not applicable for you, then send patches */
+		memcpy(buffer, "1", 2);
+		return 0;
+	}
+#endif /* DBG_MIN_SIZE */
 	*buffer = '\0';
 	return -1;
 }
@@ -730,6 +760,7 @@ end:
 	return 0;
 }
 
+#ifndef DBG_MIN_SIZE
 static signed char
 process_X (char *buffer) FASTCALL
 {/* XAA..AA,LLLL: Write LLLL binary bytes at address AA.AA return OK */
@@ -756,6 +787,14 @@ end:
 	*buffer = '\0';
 	return 0;
 }
+#else /* DBG_MIN_SIZE */
+static signed char
+process_X (char *buffer) FASTCALL
+{
+	(void)buffer;
+	return -1;
+}
+#endif /* DBG_MIN_SIZE */
 
 //static int process_s (char *buffer) FASTCALL;
 
@@ -768,17 +807,21 @@ process_c (char *buffer) FASTCALL
 		set_reg_value (&state[R_PC], addr);
 	}
 	rest_cpu_state ();
-	//not reached
 	return 0;
+}
+
+static signed char
+process_D (char *buffer) FASTCALL
+{/* 'D' - detach the program: continue execution */
+	*buffer = '\0';
+	return -2;
 }
 
 static signed char
 process_k (char *buffer) FASTCALL
 {/* 'k' - Kill the program */
-	__asm
-	rst	0	;TODO: make proper program restart
-	__endasm;
-	/* OK response */
+	void (*reset)(void) = NULL;
+	reset (); /* TODO: make proper program restart */
 	*buffer = '\0';
 	return 0;
 }
@@ -791,7 +834,7 @@ process_zZ (char *buffer) FASTCALL
 	const char *p = &buffer[3];
 	void *addr = (void*)hex2int(&p);
 	if (*p != ',')
-		return 2;
+		return 1;
 	p++;
 	int kind = hex2int(&p);
 	*buffer = '\0';
@@ -834,6 +877,7 @@ do_process (char *buffer) FASTCALL
 	case 'X': return process_X (buffer);
 	case 'Z': return process_zZ (buffer);
 	case 'c': return process_c (buffer);
+	case 'D': return process_D (buffer);
 	case 'g': return process_g (buffer);
 	case 'm': return process_m (buffer);
 	case 'q': return process_q (buffer);
@@ -843,23 +887,25 @@ do_process (char *buffer) FASTCALL
 	}
 }
 
-static void
+static char
 process (char *buffer) FASTCALL
 {
 	signed char err = do_process (buffer);
+	char *p = buffer;
+	char ret = 1;
+	if (err == -2) {
+		ret = 0;
+		err = 0;
+	}
 	if (err > 0) {
-		char *p = buffer;
 		*p++ = 'E';
 		p = byte2hex (p, err);
 		*p = '\0';
-	} else if (err < 0)
-		*buffer = '\0';
-	else if (*buffer == '\0') {
-		char *p = buffer;
-		*p++ = 'O';
-		*p++ = 'K';
+	} else if (err < 0) {
 		*p = '\0';
-	}
+	} else if (*p == '\0')
+		memcpy(p, "OK", 3);
+	return ret;
 }
 
 static char *
@@ -951,8 +997,8 @@ mem2hex (char *buf, const byte *mem, unsigned bytes)
 	return buf;
 }
 
-/* convert the hex array pointed to by buf into binary, to be placed in mem */
-/* return a pointer to the character after the last byte written */
+/* convert the hex array pointed to by buf into binary, to be placed in mem
+   return a pointer to the character after the last byte written */
 
 static const char *
 hex2mem (byte *mem, const char *buf, unsigned bytes)
@@ -965,6 +1011,44 @@ hex2mem (byte *mem, const char *buf, unsigned bytes)
 	}
 	return buf;
 }
+
+#ifdef DBG_MEMORY_MAP
+static void
+read_memory_map (char *buffer, unsigned offset, unsigned length)
+{
+	const char *map = DBG_MEMORY_MAP;
+	const unsigned map_sz = strlen(map);
+	if (offset >= map_sz) {
+		buffer[0] = 'l';
+		buffer[1] = '\0';
+		return;
+	}
+	if (offset + length > map_sz)
+		length = map_sz - offset;
+	buffer[0] = 'm';
+	memcpy (&buffer[1], &map[offset], length);
+	buffer[1+length] = '\0';
+}
+#endif
+
+/* write string like " nn:0123" and return pointer after it */
+#ifndef DBG_MIN_SIZE
+static char *
+format_reg_value (char *p, unsigned reg_num, const byte *value)
+{
+	char *d = p;
+	unsigned char i;
+	d = byte2hex(d, reg_num);
+	*d++ = ':';
+	value += REG_SIZE;
+	i = REG_SIZE;
+	do {
+		d = byte2hex(d, *--value);
+	} while (--i != 0);
+	*d++ = ';';
+	return d;
+}
+#endif /* DBG_MIN_SIZE */
 
 #ifdef __SDCC_gbz80
 /* saves all state.except PC and SP */
