@@ -68,12 +68,27 @@
 #define DBG_NMI_EX EX_HWBREAK
 #define DBG_INT_EX EX_SIGINT
 
+/* Define following macro to statement, which will be exectuted after entering to
+   stub_main function. Statement should include semicolon. */
+//#define DBG_ENTER debug_enter();
+
 /* Define following macro to instruction(s), which will be executes before return
    control to program. It is useful when gdb-stub is placed in one of overlays.
    This procedure must not change any register. On top of stack before invocation
    is return address of the program. */
 //#define DBG_RESUME jp _restore_bank
 
+/* Define following macro to string containing memory map definition XML */
+/*#define DBG_MEMORY_MAP "\
+<memory-map>\
+	<memory type=\"rom\" start=\"0x0000\" length=\"0x4000\"/>\
+<!--	<memory type=\"flash\" start=\"0x4000\" length=\"0x4000\">\
+		<property name=\"blocksize\">128</property>\
+	</memory> -->\
+	<memory type=\"ram\" start=\"0x8000\" length=\"0x8000\"/>\
+</memory-map>\
+"
+*/
 #endif /* DBG_CONFIGURED */
 /******************************************************************************\
                              Public Interface
@@ -228,6 +243,10 @@ static char stack[DBG_STACK_SIZE];
 
 #endif
 
+#ifndef DBG_ENTER
+#define DBG_ENTER
+#endif
+
 #ifndef DBG_RESUME
 #define DBG_RESUME ret
 #endif
@@ -347,6 +366,7 @@ void debug_int(void) __naked
 	ld	hl, #_stub_main
 	push	hl
 	push	hl
+	ei
 	reti
 	__endasm;
 }
@@ -356,7 +376,15 @@ void debug_print(const char *str)
 {
 	putDebugChar ('$');
 	putDebugChar ('O');
-	char csum = 'O' + put_packet_info (str);
+	char csum = 'O';
+	for (; *str != '\0'; ) {
+		char c = high_hex (*str);
+		csum += c;
+		putDebugChar (c);
+		c = low_hex (*str++);
+		csum += c;
+		putDebugChar (c);
+	}
 	putDebugChar ('#');
 	putDebugChar (high_hex (csum));
 	putDebugChar (low_hex (csum));
@@ -368,6 +396,7 @@ static void store_pc_sp (int pc_adj) FASTCALL;
 #define set_reg_value(mem,val) do { (*(void**)(mem) = (val)); } while (0)
 static char* byte2hex(char *buf, byte val);
 static int hex2int (const char **buf) FASTCALL;
+static char* int2hex (char *buf, int v);
 static void get_packet (char *buffer);
 static void put_packet (const char *buffer);
 static void process (char *buffer) FASTCALL;
@@ -378,6 +407,8 @@ stub_main (int ex, int pc_adj)
 	char buffer[DBG_PACKET_SIZE+1];
 	sigval = (signed char)ex;
 	store_pc_sp (pc_adj);
+
+	DBG_ENTER
 
 	/* after starting gdb_stub must always return stop reason */
 	*buffer = '?';
@@ -400,7 +431,7 @@ get_packet (char *buffer)
 #else
 	unsigned count;
 #endif
-	for (;;) {
+	for (;; putDebugChar ('-')) {
 		/* wait for packet start character */
 		while (getDebugChar () != '$');
 retry:
@@ -410,26 +441,32 @@ retry:
 		count = DBG_PACKET_SIZE;
 		do {
 			ch = getDebugChar ();
-			if (ch == '$')
+			switch (ch) {
+			case '$':
 				goto retry;
-			if (ch == '#')
+			case '#':
+				goto finish;
+			case '}':
+				esc = 0x20;
 				break;
-			csum += ch;
-			if (ch != '}') {
+			default:
 				*p++ = ch ^ esc;
 				esc = 0;
 				--count;
-			} else
-				esc = 0x20;
+			}
+			csum += ch;
 		} while (count != 0);
-
+finish:
 		*p = '\0';
-		if (ch == '#' && /* packet is not too large */
-			getDebugChar () == high_hex (csum) &&
-			getDebugChar () == low_hex (csum)) {
-			break;
-		} else
-			putDebugChar ('-');
+		if (ch != '#') /* packet is too large */
+			continue;
+		ch = getDebugChar ();
+		if (ch != high_hex (csum))
+			continue;
+		ch = getDebugChar ();
+		if (ch != low_hex (csum))
+			continue;
+		break;
 	}
 	putDebugChar ('+');
 }
@@ -438,14 +475,24 @@ static
 void put_packet (const char *buffer)
 {
 	/*  $<packet info>#<checksum>. */
-	do {
+	for (;;) {
 		putDebugChar ('$');
 		char checksum = put_packet_info (buffer);
 		putDebugChar ('#');
 		putDebugChar (high_hex(checksum));
 		putDebugChar (low_hex(checksum));
-
-	} while (getDebugChar () != '+');
+		for (;;) {
+			char c = getDebugChar ();
+			switch (c) {
+			case '+': return;
+			case '-': break;
+			default:
+				putDebugChar (c);
+				continue;
+			}
+			break;
+		}
+	}
 }
 
 static
@@ -522,12 +569,15 @@ process_question (char *p) FASTCALL
 		strcpy (p, " awatch:");
 		break;
 #endif
+	default:
+		goto finish;
 	}
 	for (; *p != '\0'; p++);
 	/* TODO: add support for watchpoint address */
 	*p++ = '0';
 	*p++ = '0';
 #endif /* DBG_HWBREAK, DBG_WWATCH, DBG_RWATCH, DBG_AWATCH */
+finish:
 	*p++ = '\0';
 	return 0;
 }
@@ -535,23 +585,64 @@ process_question (char *p) FASTCALL
 #define STRING2(x) #x
 #define STRING1(x) STRING2(x)
 #define STRING(x) STRING1(x)
-
+#ifdef DBG_MEMORY_MAP
+static void
+read_memory_map (char *buffer, unsigned offset, unsigned length)
+{
+	const char *map = DBG_MEMORY_MAP;
+	const unsigned map_sz = strlen(map);
+	if (offset >= map_sz) {
+		buffer[0] = 'l';
+		buffer[1] = '\0';
+		return;
+	}
+	if (offset + length > map_sz)
+		length = map_sz - offset;
+	buffer[0] = 'm';
+	memcpy (&buffer[1], &map[offset], length);
+	buffer[1+length] = '\0';
+}
+#endif
 static signed char
 process_q (char *buffer) FASTCALL
 {
-	static const char supported[] =
-		"PacketSize=" STRING(DBG_PACKET_SIZE)
+	char *p;
+	if (strncmp (buffer + 1, "Supported", 9) == 0) {
+		memcpy (buffer, "PacketSize=", 11);
+		p = int2hex (&buffer[11], DBG_PACKET_SIZE);
 #ifdef DBG_SWBREAK_PROC
-		";swbreak+"
+		memcpy (p, ";swbreak+", 9);
+		p += 9;
 #endif
 #ifdef DBG_HWBREAK
-		";hwbreak+"
+		memcpy (p, ";hwbreak+", 9);
+		p += 9;
 #endif
-	;
-	if (strncmp(buffer + 1, "Supported", 9) == 0) {
-		memcpy (buffer, supported, sizeof(supported));
+#ifdef DBG_MEMORY_MAP
+		memcpy (p, ";qXfer:memory-map:read+", 23);
+		p += 23;
+#endif
+		*p = '\0';
 		return 0;
 	}
+#ifdef DBG_MEMORY_MAP
+	if (strncmp (buffer + 1, "Xfer:memory-map:read:", 21) == 0) {
+		p = strchr (buffer + 1 + 21, ':');
+		if (p == NULL)
+			return 1;
+		++p;
+		unsigned offset = hex2int (&p);
+		if (*p++ != ',')
+			return 2;
+		unsigned length = hex2int (&p);
+		if (length == 0)
+			return 3;
+		if (length > DBG_PACKET_SIZE)
+			return 4;
+		read_memory_map (buffer, offset, length);
+		return 0;
+	}
+#endif
 	*buffer = '\0';
 	return -1;
 }
@@ -585,13 +676,13 @@ process_m (char *buffer) FASTCALL
 	if (len > DBG_PACKET_SIZE/2)
 		return 3;
 	p = buffer;
-#ifdef GDB_MEMCPY
+#ifdef DBG_MEMCPY
 	do {
 		byte tmp[16];
 		unsigned tlen = sizeof(tmp);
 		if (tlen > len)
 			tlen = len;
-		if (!GDB_MEMCPY(tmp, addr, tlen))
+		if (!DBG_MEMCPY(tmp, addr, tlen))
 			return 4;
 		p = mem2hex (p, tmp, tlen);
 		addr += tlen;
@@ -618,14 +709,14 @@ process_M (char *buffer) FASTCALL
 		goto end;
 	if (len*2 + (p - buffer) > DBG_PACKET_SIZE)
 		return 3;
-#ifdef GDB_MEMCPY
+#ifdef DBG_MEMCPY
 	do {
 		byte tmp[16];
 		unsigned tlen = sizeof(tmp);
 		if (tlen > len)
 			tlen = len;
 		p = hex2mem (tmp, p, tlen);
-		if (!GDB_MEMCPY(addr, tmp, tlen))
+		if (!DBG_MEMCPY(addr, tmp, tlen))
 			return 4;
 		addr += tlen;
 		len -= tlen;
@@ -654,8 +745,8 @@ process_X (char *buffer) FASTCALL
 		goto end;
 	if (len + (p - buffer) > DBG_PACKET_SIZE)
 		return 3;
-#ifdef GDB_MEMCPY
-	if (!GDB_MEMCPY(addr, p, len))
+#ifdef DBG_MEMCPY
+	if (!DBG_MEMCPY(addr, p, len))
 		return 4;
 #else
 	memcpy (addr, p, len);
@@ -696,13 +787,14 @@ static signed char
 process_zZ (char *buffer) FASTCALL
 { /* insert/remove breakpoint */
 #if defined(DBG_SWBREAK_PROC) || defined(DBG_HWBREAK) || defined(DBG_WWATCH) || defined(DBG_RWATCH) || defined(DBG_AWATCH)
-	const int set = (*buffer == 'Z');
+	const byte set = (*buffer == 'Z');
 	const char *p = &buffer[3];
 	void *addr = (void*)hex2int(&p);
 	if (*p != ',')
 		return 2;
 	p++;
 	int kind = hex2int(&p);
+	*buffer = '\0';
 	switch (buffer[1]) {
 #ifdef DBG_SWBREAK_PROC
 	case '0': /* sw break */
@@ -724,7 +816,7 @@ process_zZ (char *buffer) FASTCALL
 	case '4': /* access watch */
 		return DBG_AWATCH(set, addr, kind);
 #endif
-	default:;
+	default:; /* not supported */
 	}
 #endif
 	(void)buffer;
@@ -810,6 +902,13 @@ hex2int (const char **buf) FASTCALL
 		r += (byte)a;
 	}
 	return (int)r;
+}
+
+static char *
+int2hex (char *buf, int v)
+{
+	buf = byte2hex(buf, (word)v >> 8);
+	return byte2hex(buf, (byte)v);
 }
 
 static char 
