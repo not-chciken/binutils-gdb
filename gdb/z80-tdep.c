@@ -836,6 +836,7 @@ z80_software_single_step (struct regcache *regcache)
     case insn_djnz_d:
     case insn_jr_d:
     case insn_jr_cc_d:
+      addr += size;
       addr += (signed char)buf[size-1];
       break;
     case insn_jp_rr:
