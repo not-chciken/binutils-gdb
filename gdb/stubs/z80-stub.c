@@ -820,10 +820,30 @@ process_D (char *buffer) FASTCALL
 static signed char
 process_k (char *buffer) FASTCALL
 {/* 'k' - Kill the program */
-	void (*reset)(void) = NULL;
-	reset (); /* TODO: make proper program restart */
-	*buffer = '\0';
+	set_reg_value (&state[R_PC], 0);
+	rest_cpu_state ();
+	(void)buffer;
 	return 0;
+}
+
+static signed char
+process_v (char *buffer) FASTCALL
+{
+#ifndef DBG_MIN_SIZE
+	if (memcmp (&buffer[1], "Cont", 4) == 0) {
+		if (buffer[5] == '?') {
+			/* result response will be "vCont;c;C"; C action must be
+			   supported too, because GDB reguires at lease both of them */
+			memcpy (&buffer[5], ";c;C", 5);
+			return 0;
+		}
+		buffer[0] = '\0';
+		if (buffer[5] == ';' && (buffer[6] == 'c' || buffer[6] == 'C'))
+			return -2; /* resume execution */
+		return 1;
+	}
+#endif /* DBG_MIN_SIZE */
+	return -1;
 }
 
 static signed char
@@ -872,7 +892,7 @@ do_process (char *buffer) FASTCALL
 	switch (*buffer) {
 	case '?': return process_question (buffer);
 	case 'G': return process_G (buffer);
-	case 'K': return process_k (buffer);
+	case 'k': return process_k (buffer);
 	case 'M': return process_M (buffer);
 	case 'X': return process_X (buffer);
 	case 'Z': return process_zZ (buffer);
@@ -882,6 +902,7 @@ do_process (char *buffer) FASTCALL
 	case 'm': return process_m (buffer);
 	case 'q': return process_q (buffer);
 //	case 's': return process_s (buffer);
+	case 'v': return process_v (buffer);
 	case 'z': return process_zZ (buffer);
 	default:  return -1; /* empty response */
 	}
