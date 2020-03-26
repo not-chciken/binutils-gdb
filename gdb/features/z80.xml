@@ -8,5 +8,5 @@
 <!DOCTYPE target SYSTEM "gdb-target.dtd">
 <target>
   <architecture>z80</architecture>
-  <xi:include href="z80-core.xml"/>
+  <xi:include href="z80-cpu.xml"/>
 </target>

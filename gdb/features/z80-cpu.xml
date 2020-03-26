@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <!DOCTYPE feature SYSTEM "gdb-target.dtd">
-<feature name="org.gnu.gdb.z80.core">
-  <flags id="af_flags" size="1">
+<feature name="org.gnu.gdb.z80.cpu">
+  <flags id="af_flags" size="2">
     <field name="C" start="0" end="0"/>
     <field name="N" start="1" end="1"/>
     <field name="P/V" start="2" end="2"/>
@@ -23,5 +23,6 @@
   <reg name="bc'" bitsize="16" type="uint16"/>
   <reg name="de'" bitsize="16" type="data_ptr"/>
   <reg name="hl'" bitsize="16" type="data_ptr"/>
-  <reg name="ir" bitsize="16" type="uint16"/>/>
+  <reg name="ir" bitsize="16" type="uint16"/>
+<!--  <reg name="sps" bitsize="16" type="uint16"/> -->
 </feature>

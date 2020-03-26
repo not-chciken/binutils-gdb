@@ -14,9 +14,9 @@ initialize_tdesc_z80 (void)
 
   struct tdesc_feature *feature;
 
-  feature = tdesc_create_feature (result, "org.gnu.gdb.z80.core");
+  feature = tdesc_create_feature (result, "org.gnu.gdb.z80.cpu");
   tdesc_type_with_fields *type_with_fields;
-  type_with_fields = tdesc_create_flags (feature, "af_flags", 1);
+  type_with_fields = tdesc_create_flags (feature, "af_flags", 2);
   tdesc_add_flag (type_with_fields, 0, "C");
   tdesc_add_flag (type_with_fields, 1, "N");
   tdesc_add_flag (type_with_fields, 2, "P/V");

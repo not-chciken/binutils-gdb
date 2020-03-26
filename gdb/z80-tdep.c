@@ -148,23 +148,24 @@ initialize_file_ftype _initialize_z80_tdep;
 static const struct insn_info *
 z80_get_insn_info (struct gdbarch *gdbarch, const gdb_byte *buf, int *size);
 
+static const char *z80_reg_names[] =
+{
+  /* 24 bit on eZ80, else 16 bit */
+  "af", "bc", "de", "hl",
+  "sp", "pc", "ix", "iy",
+  "af'", "bc'", "de'", "hl'",
+  "ir",
+  /* eZ80 only */
+  "sps"
+};
+
 /* Return the name of register REGNUM.  */
 static const char *
 z80_register_name (struct gdbarch *gdbarch, int regnum)
 {
-  static const char *register_names[] =
-  {
-    /* 24 bit on eZ80, else 16 bit */
-    "af", "bc", "de", "hl",
-    "sp", "pc", "ix", "iy",
-    "af'", "bc'", "de'", "hl'",
-    "ir",
-    /* eZ80 only */
-    "sps"
-  };
 
-  if (regnum >= 0 && regnum < ARRAY_SIZE (register_names))
-    return register_names[regnum];
+  if (regnum >= 0 && regnum < ARRAY_SIZE (z80_reg_names))
+    return z80_reg_names[regnum];
 
   return NULL;
 }
@@ -1018,6 +1019,10 @@ z80_read_overlay_region_table (void)
       return 0;
     }
 
+  const enum overlay_debugging_state save_ovly_dbg = overlay_debugging;
+  /* prevent infinite recurse */
+  overlay_debugging = ovly_off;
+
   gdbarch = get_objfile_arch (ovly_region_table_msym.objfile);
   word_size = gdbarch_long_bit (gdbarch) / TARGET_CHAR_BIT;
   byte_order = gdbarch_byte_order (gdbarch);
@@ -1034,6 +1039,7 @@ z80_read_overlay_region_table (void)
 			  (unsigned int *) cache_ovly_region_table,
 			  cache_novly_regions * 3, word_size, byte_order);
 
+  overlay_debugging = save_ovly_dbg;
   return 1;                     /* SUCCESS */
   
 }
@@ -1082,18 +1088,19 @@ z80_overlay_update (struct obj_section *osect)
   /* Update all sections, even if only one was requested. */
   for (objfile *objfile : current_program_space->objfiles ())
     ALL_OBJFILE_OSECTIONS (objfile, osect)
-      if (section_is_overlay (osect))
-        {
-          int i;
-          asection *bsect = osect->the_bfd_section;
-	  unsigned lma = bfd_section_lma (bsect);
-	  unsigned vma = bfd_section_vma (bsect);
+      {
+	if (!section_is_overlay (osect))
+	  continue;
+	
+	asection *bsect = osect->the_bfd_section;
+	bfd_vma lma = bfd_section_lma (bsect);
+	bfd_vma vma = bfd_section_vma (bsect);
 
-          for (i = 0; i < cache_novly_regions; i++)
-            if (cache_ovly_region_table[i][VMA] == vma)
-              osect->ovly_mapped = (cache_ovly_region_table[i][MAPPED_TO_LMA]
-					== lma);
-        }
+	for (int i = 0; i < cache_novly_regions; ++i)
+	  if (cache_ovly_region_table[i][VMA] == vma)
+	    osect->ovly_mapped =
+			(cache_ovly_region_table[i][MAPPED_TO_LMA] == lma);
+      }
 }
 
 /* Return non-zero if the instruction at ADDR is a call; zero otherwise. */
@@ -1178,7 +1185,38 @@ z80_gdbarch_init (struct gdbarch_info info, struct gdbarch_list *arches)
   struct gdbarch *gdbarch;
   struct gdbarch_tdep *tdep;
   struct gdbarch_list *best_arch;
+  struct tdesc_arch_data *tdesc_data = NULL;
   unsigned long mach = info.bfd_arch_info->mach;
+  const struct target_desc *tdesc = info.target_desc;
+
+  if (!tdesc_has_registers (tdesc))
+    /* Pick a default target description.  */
+    tdesc = tdesc_z80;
+
+  /* Check any target description for validity.  */
+  if (tdesc_has_registers (tdesc))
+    {
+      const struct tdesc_feature *feature;
+      int valid_p;
+
+      feature = tdesc_find_feature (tdesc, "org.gnu.gdb.z80.cpu");
+      if (feature == NULL)
+	return NULL;
+
+      tdesc_data = tdesc_data_alloc ();
+
+      valid_p = 1;
+
+      for (unsigned i = 0; i < Z80_NUM_REGS; i++)
+	valid_p &= tdesc_numbered_register (feature, tdesc_data, i,
+					    z80_reg_names[i]);
+
+      if (!valid_p)
+	{
+	  tdesc_data_cleanup (tdesc_data);
+	  return NULL;
+	}
+    }
 
   /* If there is already a candidate, use it.  */
   for (best_arch = gdbarch_list_lookup_by_info (arches, &info);
@@ -1250,6 +1288,8 @@ z80_gdbarch_init (struct gdbarch_info info, struct gdbarch_list *arches)
   set_gdbarch_overlay_update (gdbarch, z80_overlay_update);
 
   frame_unwind_append_unwinder (gdbarch, &z80_frame_unwind);
+  if (tdesc_data)
+    tdesc_use_registers (gdbarch, tdesc, tdesc_data);
 
   return gdbarch;
 }
@@ -1276,9 +1316,10 @@ ez80_main_insn_table[] =
   { 0133, 0377, 1, insn_adl      }, //eZ80 mode prefix
   /* here common Z80/Z180/eZ80 opcodes */
   { 0000, 0367, 1, insn_default  }, //"nop", "ex af,af'"
-  { 0061, 0277, 1, insn_ld_sp_nn }, //"ld sp,nn"
+  { 0061, 0377, 3, insn_ld_sp_nn }, //"ld sp,nn"
   { 0001, 0317, 3, insn_default  }, //"ld rr,nn"
-  { 0002, 0347, 3, insn_default  }, //"ld (rr),a", "ld a,(rr)"
+  { 0002, 0347, 1, insn_default  }, //"ld (rr),a", "ld a,(rr)"
+  { 0042, 0347, 3, insn_default  }, //"ld (nn),hl/a", "ld hl/a,(nn)"
   { 0063, 0377, 1, insn_inc_sp   }, //"inc sp"
   { 0073, 0377, 1, insn_dec_sp   }, //"dec sp"
   { 0003, 0303, 1, insn_default  }, //"inc rr", "dec rr", ...
@@ -1286,7 +1327,7 @@ ez80_main_insn_table[] =
   { 0006, 0307, 2, insn_default  }, //"ld r,n", "ld (hl),n"
   { 0020, 0377, 2, insn_djnz_d   }, //"djnz dis"
   { 0030, 0377, 2, insn_jr_d     }, //"jr dis"
-  { 0040, 0337, 2, insn_jr_cc_d  }, //"jr cc,dis"
+  { 0040, 0347, 2, insn_jr_cc_d  }, //"jr cc,dis"
   { 0100, 0300, 1, insn_default  }, //"ld r,r", "halt"
   { 0200, 0300, 1, insn_default  }, //"alu_op a,r"
   { 0300, 0307, 1, insn_ret_cc   }, //"ret cc"
@@ -1317,8 +1358,10 @@ ez80_adl_main_insn_table[] =
   { 0133, 0377, 0, insn_force_nop}, //double prefix
   /* initial table for eZ80_adl */
   { 0000, 0367, 1, insn_default  }, //"nop", "ex af,af'"
-  { 0001, 0317, 4, insn_default  }, //"ld rr,nn"
-  { 0002, 0347, 4, insn_default  }, //"ld (rr),a", "ld a,(rr)"
+  { 0061, 0377, 4, insn_ld_sp_nn }, //"ld sp,Mmn"
+  { 0001, 0317, 4, insn_default  }, //"ld rr,Mmn"
+  { 0002, 0347, 1, insn_default  }, //"ld (rr),a", "ld a,(rr)"
+  { 0042, 0347, 4, insn_default  }, //"ld (Mmn),hl/a", "ld hl/a,(Mmn)"
   { 0063, 0377, 1, insn_inc_sp   }, //"inc sp"
   { 0073, 0377, 1, insn_dec_sp   }, //"dec sp"
   { 0003, 0303, 1, insn_default  }, //"inc rr", "dec rr", ...
@@ -1326,7 +1369,7 @@ ez80_adl_main_insn_table[] =
   { 0006, 0307, 2, insn_default  }, //"ld r,n", "ld (hl),n"
   { 0020, 0377, 2, insn_djnz_d   }, //"djnz dis"
   { 0030, 0377, 2, insn_jr_d     }, //"jr dis"
-  { 0040, 0337, 2, insn_jr_cc_d  }, //"jr cc,dis"
+  { 0040, 0347, 2, insn_jr_cc_d  }, //"jr cc,dis"
   { 0100, 0377, 1, insn_z80      }, //eZ80 mode prefix (short instruction)
   { 0111, 0377, 1, insn_z80      }, //eZ80 mode prefix (short instruction)
   { 0122, 0377, 1, insn_adl      }, //eZ80 mode prefix (long instruction)
@@ -1337,13 +1380,13 @@ ez80_adl_main_insn_table[] =
   { 0301, 0317, 1, insn_pop_rr   }, //"pop rr"
   { 0302, 0307, 4, insn_jp_cc_nn }, //"jp cc,nn"
   { 0303, 0377, 4, insn_jp_nn    }, //"jp nn"
-  { 0304, 0307, 4, insn_call_cc_nn}, //"call cc,nn"
+  { 0304, 0307, 4, insn_call_cc_nn}, //"call cc,Mmn"
   { 0305, 0317, 1, insn_push_rr  }, //"push rr"
   { 0306, 0307, 2, insn_default  }, //"alu_op a,n"
   { 0307, 0307, 1, insn_rst_n    }, //"rst n"
   { 0311, 0377, 1, insn_ret      }, //"ret"
   { 0313, 0377, 2, insn_default  }, //CB prefix
-  { 0315, 0377, 4, insn_call_nn  }, //"call nn"
+  { 0315, 0377, 4, insn_call_nn  }, //"call Mmn"
   { 0323, 0367, 2, insn_default  }, //"out (n),a", "in a,(n)"
   { 0335, 0337, 1, insn_adl_ddfd }, //DD/FD prefix
   { 0351, 0377, 1, insn_jp_rr    }, //"jp (hl)"
