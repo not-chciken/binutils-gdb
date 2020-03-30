@@ -612,7 +612,7 @@ z80_frame_unwind_cache (struct frame_info *this_frame,
       for (;; ++sp)
 	{
 	  sp &= sp_mask;
-	  if (sp < this_base)
+	  if ( ((sp + addr_len) & sp_mask) < this_base)
 	    { /*overflow, looks like end of stack */
 	      sp = this_base + info->size;
 	      break;
@@ -739,9 +739,10 @@ z80_breakpoint_kind_from_pc (struct gdbarch *gdbarch, CORE_ADDR *pcptr)
 	addr = BMSYMBOL_VALUE_ADDRESS (bh);
       else
 	{
-	  warning(_("Unable to determine inferior's software breakpoint type: "
-		    "couldn't find `_break_handler' function in inferior. Will "
-		    "be used default software breakpoint instruction RST 0x08."));
+	  warning(_("Unable to determine inferior's software breakpoint "
+		    "type: couldn't find `_break_handler' function in the "
+		    "executable. Will be used default software breakpoint "
+		    "instruction RST 0x08."));
 	  addr = 0x0008;
 	}
     }
@@ -783,12 +784,6 @@ z80_breakpoint_from_pc (struct gdbarch *gdbarch, CORE_ADDR * pcptr, int *lenptr)
   return z80_sw_breakpoint_from_kind (gdbarch, kind, lenptr);
 }
 */
-
-/* GDB server must always do that itself */
-/*static int
-z80_adjust_breakpoint_address (struct gdbarch *gdbarch, CORE_ADDR bpaddr)
-{
-}*/
 
 /* Return a vector of addresses on which the software single step
    breakpoints should be inserted.  NULL means software single step is
