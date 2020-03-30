@@ -176,7 +176,20 @@ z80_register_name (struct gdbarch *gdbarch, int regnum)
 static struct type *
 z80_register_type (struct gdbarch *gdbarch, int reg_nr)
 {
-  return builtin_type (gdbarch)->builtin_data_ptr;
+  switch (reg_nr) {
+    {
+    case Z80_AF_REGNUM:
+    case Z80_BC_REGNUM:
+    case Z80_AFA_REGNUM:
+    case Z80_BCA_REGNUM:
+    case Z80_IR_REGNUM:
+      return builtin_type (gdbarch)->builtin_uint16;
+    case Z80_PC_REGNUM:
+      return builtin_type (gdbarch)->builtin_func_ptr;
+    default:
+      return builtin_type (gdbarch)->builtin_data_ptr;
+    }
+  }
 }
 
 /* next 2 functions check buffer for instruction. If it is pop/push rr, then it
@@ -1261,6 +1274,7 @@ z80_gdbarch_init (struct gdbarch_info info, struct gdbarch_list *arches)
 							     : Z80_NUM_REGS);
   set_gdbarch_sp_regnum (gdbarch, Z80_SP_REGNUM);
   set_gdbarch_pc_regnum (gdbarch, Z80_PC_REGNUM);
+  set_gdbarch_ps_regnum (gdbarch, Z80_AF_REGNUM);
 
   set_gdbarch_register_name (gdbarch, z80_register_name);
   set_gdbarch_register_type (gdbarch, z80_register_type);
