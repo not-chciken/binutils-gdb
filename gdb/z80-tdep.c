@@ -89,7 +89,7 @@ struct z80_unwind_cache
 
   /* size of saved state (including frame pointer and return address),
      assume: prev_sp + size = IX + state_size */
-  ULONGEST state_size; 
+  ULONGEST state_size;
 
   struct {
     int called:1;	/* there is return address on stack */
@@ -142,7 +142,7 @@ struct insn_info
 
 /* Constants */
 
-extern 
+extern
 initialize_file_ftype _initialize_z80_tdep;
 
 static const struct insn_info *
@@ -250,8 +250,18 @@ z80_is_push_rr (const gdb_byte buf[], int *size)
   return 0;
 }
 
+static CORE_ADDR
+z80_get_symbol_address (const char *name)
+{
+  struct bound_minimal_symbol msymbol;
+  msymbol = lookup_minimal_symbol (name, NULL, NULL);
+  if (!msymbol.minsym)
+    return (CORE_ADDR)-1;
+  return BMSYMBOL_VALUE_ADDRESS (msymbol);
+}
+
 /* Function: z80_scan_prologue
-        
+
    This function decodes a function prologue to determine:
      1) the size of the stack frame
      2) which registers are saved on it
@@ -315,7 +325,7 @@ z80_is_push_rr (const gdb_byte buf[], int *size)
 
 static int
 z80_scan_prologue (struct gdbarch *gdbarch, CORE_ADDR pc_beg, CORE_ADDR pc_end,
-                   struct z80_unwind_cache *info)
+		   struct z80_unwind_cache *info)
 {
   enum bfd_endian byte_order = gdbarch_byte_order (gdbarch);
   int addr_len = gdbarch_tdep (gdbarch)->addr_length;
@@ -378,7 +388,7 @@ z80_scan_prologue (struct gdbarch *gdbarch, CORE_ADDR pc_beg, CORE_ADDR pc_end,
 	}
     }
   else if (!memcmp (&prologue[pos], "\335\345\335\041\000\000", 4+addr_len) &&
-           !memcmp (&prologue[pos+4+addr_len], "\335\071\335\371", 4))
+	   !memcmp (&prologue[pos+4+addr_len], "\335\071\335\371", 4))
     { /* push ix; ld ix, #0; add ix, sp; ld sp, ix */
       pos += 4 + addr_len + 4;
       info->prologue_type.fp_sdcc = 1;
@@ -509,7 +519,7 @@ z80_skip_prologue (struct gdbarch *gdbarch, CORE_ADDR pc)
       struct compunit_symtab *compunit = SYMTAB_COMPUNIT (prologue_sal.symtab);
       const char *debug_format = COMPUNIT_DEBUGFORMAT (compunit);
 
-      if (debug_format != NULL && 
+      if (debug_format != NULL &&
 	  !strncasecmp ("dwarf", debug_format, strlen("dwarf")))
 	return std::max (pc, prologue_end);
     }
@@ -529,8 +539,8 @@ z80_skip_prologue (struct gdbarch *gdbarch, CORE_ADDR pc)
    for instance). */
 static enum return_value_convention
 z80_return_value (struct gdbarch *gdbarch, struct value *function,
-                  struct type *valtype, struct regcache *regcache,
-                  gdb_byte *readbuf, const gdb_byte *writebuf)
+		  struct type *valtype, struct regcache *regcache,
+		  gdb_byte *readbuf, const gdb_byte *writebuf)
 {
   /* Byte are returned in L, word in HL, dword in DEHL. */
   int len = TYPE_LENGTH (valtype);
@@ -564,15 +574,54 @@ z80_return_value (struct gdbarch *gdbarch, struct value *function,
   return RETURN_VALUE_REGISTER_CONVENTION;
 }
 
+static CORE_ADDR
+z80_get_stack_start (void)
+{
+  static const char *stackBegNames[] =
+    {
+      "__stack_start",
+      "__sstack",
+      "_sstack",
+      "__stack",
+      "_stack",
+      ".stack"
+    };
+  for (const char *name : stackBegNames)
+    {
+      CORE_ADDR addr = z80_get_symbol_address (name);
+      if (addr != CORE_ADDR(-1))
+	return addr;
+    }
+  return CORE_ADDR(-1);
+}
+
+static CORE_ADDR
+z80_get_stack_end (void)
+{
+  static const char *stackEndNames[] =
+    {
+      "__stack_end",
+      "__estack",
+      "_estack",
+      "__stack_top"
+    };
+  for (const char *name : stackEndNames)
+    {
+      CORE_ADDR addr = z80_get_symbol_address (name);
+      if (addr != CORE_ADDR(-1))
+	return addr;
+    }
+  return CORE_ADDR(-1);
+}
+
 /* function unwinds current stack frame and returns next one */
 static struct z80_unwind_cache *
 z80_frame_unwind_cache (struct frame_info *this_frame,
-                        void **this_prologue_cache)
+			void **this_prologue_cache)
 {
   CORE_ADDR start_pc, current_pc;
   ULONGEST this_base;
   int i;
-  gdb_byte buf[sizeof(void*)];
   struct z80_unwind_cache *info;
   struct gdbarch *gdbarch = get_frame_arch (this_frame);
   //struct gdbarch_tdep *tdep = gdbarch_tdep (gdbarch);
@@ -590,7 +639,7 @@ z80_frame_unwind_cache (struct frame_info *this_frame,
   current_pc = get_frame_pc (this_frame);
   if ((start_pc > 0) && (start_pc <= current_pc))
     z80_scan_prologue (get_frame_arch (this_frame),
-                       start_pc, current_pc, info);
+		       start_pc, current_pc, info);
 
   if (info->prologue_type.fp_sdcc)
     {
@@ -601,51 +650,56 @@ z80_frame_unwind_cache (struct frame_info *this_frame,
     }
   else
     {
+      gdb_byte buf[32];
       CORE_ADDR addr;
       CORE_ADDR sp;
-      CORE_ADDR sp_mask = (1 << gdbarch_ptr_bit(gdbarch)) - 1;
+      CORE_ADDR sp_min = z80_get_stack_start ();
+      CORE_ADDR sp_max = z80_get_stack_end ();
       enum bfd_endian byte_order = gdbarch_byte_order (gdbarch);
+      if (sp_min == CORE_ADDR(-1))
+	sp_min = 0;
+      if (sp_max == CORE_ADDR(-1))
+	sp_max = (1 << gdbarch_ptr_bit(gdbarch));
       /* Assume that the FP is this frame's SP but with that pushed
-         stack space added back.  */
+	 stack space added back.  */
       this_base = get_frame_register_unsigned (this_frame, Z80_SP_REGNUM);
       sp = this_base + info->size;
-      for (;; ++sp)
+      if (this_base < sp_min || sp > sp_max)
+	  return info;
+      for (CORE_ADDR buf_sp = 0;; ++sp)
 	{
-	  sp &= sp_mask;
-	  if ( ((sp + addr_len) & sp_mask) < this_base)
+	  if (sp < this_base || sp + addr_len > sp_max)
 	    { /*overflow, looks like end of stack */
 	      sp = this_base + info->size;
 	      break;
 	    }
+	  /* read stack by sizeof(buf) bytes, it speedup operation */
+	  if (sp + addr_len > buf_sp + sizeof(buf))
+	    {
+	      buf_sp = sp - sp % sizeof(buf);
+	      read_memory (buf_sp, buf, sizeof(buf));
+	    }
 	  /* find return address */
-	  read_memory (sp, buf, addr_len);
-	  addr = extract_unsigned_integer(buf, addr_len, byte_order);
-	  read_memory (addr-addr_len-1, buf, addr_len+1);
-	  if (buf[0] == 0xcd || (buf[0] & 0307) == 0304) /* Is it CALL */
-            { /* CALL nn or CALL cc,nn */
+	  addr = extract_unsigned_integer(buf + sp - buf_sp, addr_len, byte_order);
+	  if (addr < addr_len + 1)
+	    continue;
+	  gdb_byte insn_buf[6];
+	  read_memory (addr-addr_len-1, insn_buf, addr_len+1);
+	  if (insn_buf[0] == 0xcd || (insn_buf[0] & 0307) == 0304) /* Is it CALL */
+	    { /* CALL nn or CALL cc,nn */
 	      static const char *names[] =
 		{
 		  "__sdcc_call_ix", "__sdcc_call_iy", "__sdcc_call_hl"
 		};
-	      addr = extract_unsigned_integer(buf+1, addr_len, byte_order);
+	      addr = extract_unsigned_integer(insn_buf+1, addr_len, byte_order);
 	      if (addr == start_pc)
-		break; /* found */
+		break; /* found CALL start_pc */
 	      for (i = sizeof(names)/sizeof(*names)-1; i >= 0; --i)
-		{
-		  struct bound_minimal_symbol msymbol;
-		  msymbol = lookup_minimal_symbol (names[i], NULL, NULL);
-		  if (!msymbol.minsym)
-		    continue;
-		  if (addr == BMSYMBOL_VALUE_ADDRESS (msymbol))
-		    break;
-		}
+		if (addr == z80_get_symbol_address(names[i]))
+		  break;
 	      if (i >= 0)
 		break;
-	      continue;
-            }
-	  else
-	    continue; /* it is not call_nn, call_cc_nn */
-	  
+	    }
 	}
       info->prev_sp = sp;
     }
@@ -664,7 +718,7 @@ z80_frame_unwind_cache (struct frame_info *this_frame,
   /* The previous frame's SP needed to be computed.  Save the computed
      value.  */
   trad_frame_set_value (info->saved_regs, Z80_SP_REGNUM,
-                        info->prev_sp + addr_len);
+			info->prev_sp + addr_len);
   return info;
 }
 
@@ -714,7 +768,7 @@ z80_frame_prev_register (struct frame_info *this_frame,
 	  struct gdbarch_tdep *tdep = gdbarch_tdep (gdbarch);
 	  enum bfd_endian byte_order = gdbarch_byte_order (gdbarch);
 
-          read_memory (info->saved_regs[Z80_PC_REGNUM].addr,
+	  read_memory (info->saved_regs[Z80_PC_REGNUM].addr,
 		       buf, tdep->addr_length);
 	  pc = extract_unsigned_integer(buf, tdep->addr_length, byte_order);
 	  return frame_unwind_got_constant (this_frame, regnum, pc);
@@ -831,7 +885,7 @@ z80_software_single_step (struct regcache *regcache)
       if ((opcode & 010) != 0)
 	t = ~t;
       /* two higher bits of condition field defines flag, so use them only
-         to check condition of "not execute" */
+	 to check condition of "not execute" */
       if (t & flag_mask[(opcode >> 4) & 3])
 	return ret;
       break;
@@ -933,10 +987,10 @@ z80_displaced_step_hw_singlestep (struct gdbarch *gdbarch,
 
    REGS is the register state resulting from single-stepping the
    displaced instruction.
-   
+
    CLOSURE is the result from the matching call to
    gdbarch_displaced_step_copy_insn.
-   
+
    If you provide gdbarch_displaced_step_copy_insn.but not this
    function, then GDB assumes that no fixup is needed after
    single-stepping the instruction.
@@ -957,7 +1011,7 @@ z80_displaced_step_fixup (struct gdbarch *gdbarch,
 
    For a general explanation of displaced stepping and how GDB uses it,
    see the comments in infrun.c. */
-   
+
 static int
 z80_displaced_step_location (struct gdbarch *gdbarch)
 {
@@ -988,7 +1042,7 @@ z80_free_overlay_region_table (void)
 
 static void
 read_target_long_array (CORE_ADDR memaddr, unsigned int *myaddr,
-                        int len, int size, enum bfd_endian byte_order)
+			int len, int size, enum bfd_endian byte_order)
 {
   /* alloca is safe here, because regions array is very small. */
   gdb_byte *buf = (gdb_byte *) alloca (len * size);
@@ -1040,7 +1094,7 @@ z80_read_overlay_region_table (void)
 				4, byte_order);
   cache_ovly_region_table
     = (unsigned int (*)[3]) xmalloc (cache_novly_regions *
-					sizeof (*cache_ovly_region_table));
+				     sizeof (*cache_ovly_region_table));
   cache_ovly_region_table_base
     = BMSYMBOL_VALUE_ADDRESS (ovly_region_table_msym);
   read_target_long_array (cache_ovly_region_table_base,
@@ -1049,10 +1103,10 @@ z80_read_overlay_region_table (void)
 
   overlay_debugging = save_ovly_dbg;
   return 1;                     /* SUCCESS */
-  
+
 }
 
-static int 
+static int
 z80_overlay_update_1 (struct obj_section *osect)
 {
   int i;
@@ -1082,7 +1136,7 @@ z80_overlay_update_1 (struct obj_section *osect)
 }
 
 /* Refresh overlay mapped state for section OSECT. */
-static void 
+static void
 z80_overlay_update (struct obj_section *osect)
 {
   /* Always need to read the entire table anew. */
@@ -1099,7 +1153,7 @@ z80_overlay_update (struct obj_section *osect)
       {
 	if (!section_is_overlay (osect))
 	  continue;
-	
+
 	asection *bsect = osect->the_bfd_section;
 	bfd_vma lma = bfd_section_lma (bsect);
 	bfd_vma vma = bfd_section_vma (bsect);
@@ -1232,7 +1286,7 @@ z80_gdbarch_init (struct gdbarch_info info, struct gdbarch_list *arches)
        best_arch = gdbarch_list_lookup_by_info (best_arch->next, &info))
     {
       if (mach == gdbarch_bfd_arch_info (best_arch->gdbarch)->mach)
-        return best_arch->gdbarch;
+	return best_arch->gdbarch;
     }
 
   /* None found, create a new architecture from the information provided.  */
@@ -1253,7 +1307,7 @@ z80_gdbarch_init (struct gdbarch_info info, struct gdbarch_list *arches)
   /* Create a type for PC.  We can't use builtin types here, as they may not
      be defined.  */
   tdep->void_type = arch_type (gdbarch, TYPE_CODE_VOID, TARGET_CHAR_BIT,
-                               "void");
+			       "void");
   tdep->func_void_type = make_function_type (tdep->void_type, NULL);
   tdep->pc_type = arch_pointer_type (gdbarch,
 				     tdep->addr_length * TARGET_CHAR_BIT,
@@ -1445,7 +1499,7 @@ ez80_adl_ed_insn_table[] =
 };
 
 /* table for FD and DD prefixed instructions */
-static const struct insn_info 
+static const struct insn_info
 ez80_ddfd_insn_table[] =
 {
   /* ez80 only instructions */
@@ -1477,7 +1531,7 @@ ez80_ddfd_insn_table[] =
   { 0000, 0000, 0, insn_default }  //not an instruction, exec DD/FD as NOP
 };
 
-static const struct insn_info 
+static const struct insn_info
 ez80_adl_ddfd_insn_table[] =
 {
   { 0007, 0307, 2, insn_default }, //"ld rr,(ii+d)"
