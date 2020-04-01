@@ -1432,8 +1432,8 @@ ez80_adl_ed_insn_table[] =
 {
   { 0002, 0366, 2, insn_default }, //"lea rr,ii+d"
   { 0124, 0376, 2, insn_default }, //"lea ix,iy+d", "lea iy,ix+d"
-  { 0145, 0377, 2, insn_default }, //"pea ix+d"
-  { 0146, 0377, 2, insn_default }, //"pea iy+d"
+  { 0145, 0377, 2, insn_push_rr }, //"pea ix+d"
+  { 0146, 0377, 2, insn_push_rr }, //"pea iy+d"
   { 0164, 0377, 2, insn_default }, //"tstio n"
   { 0060, 0376, 1, insn_default }, //not an instruction
   { 0000, 0306, 2, insn_default }, //"in0 r,(n)", "out0 (n),r"
@@ -1469,7 +1469,8 @@ ez80_ddfd_insn_table[] =
   { 0206, 0307, 2, insn_default }, //"alu_op a,(ii+d)"
   { 0313, 0377, 3, insn_default }, //DD/FD CB dd oo instructions
   { 0335, 0337, 0, insn_force_nop}, //double DD/FD prefix, exec DD/FD as NOP
-  { 0341, 0373, 1, insn_default }, //"pop ii", "push ii"
+  { 0341, 0377, 1, insn_pop_rr  }, //"pop ii"
+  { 0345, 0377, 1, insn_push_rr }, //"push ii"
   { 0343, 0377, 1, insn_default }, //"ex (sp),ii"
   { 0351, 0377, 1, insn_jp_rr   }, //"jp (ii)"
   { 0371, 0377, 1, insn_ld_sp_rr}, //"ld sp,ii"
