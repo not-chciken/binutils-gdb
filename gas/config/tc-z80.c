@@ -492,6 +492,9 @@ md_begin (void)
   unsigned int i, j, k;
   char buf[BUFLEN];
 
+  memset (&reg, 0, sizeof (reg));
+  memset (&nul, 0, sizeof (nul));
+
   if (ins_ok & INS_EZ80)   /* if select EZ80 cpu then */
     listing_lhs_width = 6; /* use 6 bytes per line in the listing */
 
@@ -878,6 +881,7 @@ parse_exp_not_indexed (const char *s, expressionS *op)
   int indir;
   int make_shift = -1;
 
+  memset (op, 0, sizeof (*op));
   p = skip_space (s);
   if (sdcc_compat && (*p == '<' || *p == '>'))
     {
@@ -961,10 +965,9 @@ unify_indexed (expressionS *op)
   if (O_subtract == op->X_op)
     {
       expressionS minus;
+      memset (&minus, 0, sizeof (minus));
       minus.X_op = O_uminus;
-      minus.X_add_number = 0;
       minus.X_add_symbol = op->X_op_symbol;
-      minus.X_op_symbol = 0;
       op->X_op_symbol = make_expr_symbol (&minus);
       op->X_op = O_add;
     }
@@ -977,7 +980,6 @@ unify_indexed (expressionS *op)
       add.X_op = O_symbol;
       add.X_add_number = op->X_add_number;
       add.X_add_symbol = op->X_op_symbol;
-      add.X_op_symbol = 0;
       op->X_add_symbol = make_expr_symbol (&add);
     }
   else
