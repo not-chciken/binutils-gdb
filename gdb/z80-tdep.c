@@ -685,21 +685,8 @@ z80_frame_unwind_cache (struct frame_info *this_frame,
 	    continue;
 	  gdb_byte insn_buf[6];
 	  read_memory (addr-addr_len-1, insn_buf, addr_len+1);
-	  if (insn_buf[0] == 0xcd || (insn_buf[0] & 0307) == 0304) /* Is it CALL */
-	    { /* CALL nn or CALL cc,nn */
-	      static const char *names[] =
-		{
-		  "__sdcc_call_ix", "__sdcc_call_iy", "__sdcc_call_hl"
-		};
-	      addr = extract_unsigned_integer(insn_buf+1, addr_len, byte_order);
-	      if (addr == start_pc)
-		break; /* found CALL start_pc */
-	      for (i = sizeof(names)/sizeof(*names)-1; i >= 0; --i)
-		if (addr == z80_get_symbol_address(names[i]))
-		  break;
-	      if (i >= 0)
-		break;
-	    }
+	  if (insn_buf[0] == 0xcd || (insn_buf[0] & 0307) == 0304 || (insn_buf[addr_len] & 0307) == 0307) /* Is it CALL or RST? */
+	    break; /* yes */
 	}
       info->prev_sp = sp;
     }
