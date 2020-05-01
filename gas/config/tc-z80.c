@@ -3458,6 +3458,7 @@ const pseudo_typeS md_pseudo_table[] =
   { ".r800", set_inss, INS_R800},
   { ".set", s_set, 0},
   { ".z180", set_inss, INS_Z180},
+  { ".hd64", set_inss, INS_Z180},
   { ".z80", set_inss, INS_Z80},
   { ".z80n", set_inss, INS_Z80N},
   { "db" , emit_data, 1},
